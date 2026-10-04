@@ -5,21 +5,24 @@ import api, { isCancel, unwrapData } from '../utils/api'
 import { formatBytes, formatMspt, formatPercent, formatSpeed, formatTps } from '../utils/format'
 import type { Overview } from './ServerStatusDetail'
 import { MiniStatSkeleton } from './Skeleton'
+import { MetricUnavailableNotice } from './MetricUnavailableNotice'
 
 interface StatusOverviewCardProps {
   onOpenDetail: () => void
 }
 
-const MiniStat: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({
+const MiniStat: React.FC<{ label: string; value: string; sub?: string; color?: string; notice?: React.ReactNode }> = ({
   label,
   value,
   sub,
   color,
+  notice,
 }) => (
   <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 p-3 min-w-0">
     <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 truncate">{label}</p>
     <p className={`text-lg font-bold tabular-nums truncate ${color ?? 'text-slate-900 dark:text-white'}`}>
       {value}
+      {notice}
     </p>
     {sub && <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{sub}</p>}
   </div>
@@ -87,10 +90,15 @@ const StatusOverviewCard: React.FC<StatusOverviewCardProps> = ({ onOpenDetail })
           <>
         <MiniStat
           label="TPS"
+           notice={<MetricUnavailableNotice metric="tps" reason={overview?.tps_reason} />}
           value={formatTps(overview?.tps)}
           color={overview?.tps != null && overview.tps < 18 ? 'text-amber-600 dark:text-amber-400' : undefined}
         />
-        <MiniStat label={t('page.status.mspt')} value={formatMspt(overview?.mspt)} />
+        <MiniStat
+           label={t('page.status.mspt')}
+           value={formatMspt(overview?.mspt)}
+           notice={<MetricUnavailableNotice metric="mspt" reason={overview?.mspt_reason} />}
+         />
         <MiniStat
           label={t('page.status.cpu')}
           value={formatPercent(overview?.cpu.system)}

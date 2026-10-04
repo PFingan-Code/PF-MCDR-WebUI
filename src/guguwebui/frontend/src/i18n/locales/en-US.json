@@ -434,6 +434,16 @@
             "online": "Online",
             "offline": "Offline",
             "na": "N/A",
+            "metric_unavailable": {
+                "open": "View why this metric is unavailable",
+                "title": "Why {{metric}} has no data",
+                "reasons": {
+                    "server_offline": "The Minecraft server is offline, so TPS/MSPT cannot be collected.",
+                    "rcon_unavailable": "RCON is disabled or unavailable, so TPS/MSPT commands cannot be executed.",
+                    "sampling_pending": "The monitoring thread has not completed its first sample yet. Please wait a moment.",
+                    "commands_unsupported": "RCON is connected, but the server returned no valid data. It may not support /tick query, /mspt, or /tps."
+                }
+            },
             "mspt": "MSPT",
             "cpu": "CPU",
             "memory": "Memory",

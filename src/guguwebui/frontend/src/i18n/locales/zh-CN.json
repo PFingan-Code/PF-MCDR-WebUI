@@ -435,6 +435,16 @@
             "online": "在线",
             "offline": "离线",
             "na": "不可用",
+            "metric_unavailable": {
+                "open": "查看无数据原因",
+                "title": "{{metric}} 无数据原因",
+                "reasons": {
+                    "server_offline": "Minecraft 服务器当前离线，无法采集 TPS/MSPT。",
+                    "rcon_unavailable": "RCON 未启用或当前不可用，无法执行 TPS/MSPT 查询命令。",
+                    "sampling_pending": "监控线程尚未完成第一次采样，请稍候。",
+                    "commands_unsupported": "RCON 已连接，但服务端未返回有效数据，可能不支持 /tick query、/mspt 或 /tps 命令。"
+                }
+            },
             "mspt": "MSPT",
             "cpu": "CPU",
             "memory": "内存",

@@ -17,6 +17,7 @@ import {
 } from '../utils/format'
 import StatusChart, { ChartPoint, ChartSeriesDef } from './StatusChart'
 import { ChartSkeleton, MiniStatSkeleton, TableRowSkeleton } from './Skeleton'
+import { MetricUnavailableNotice } from './MetricUnavailableNotice'
 
 type RangeKey = (typeof STATUS_RANGES)[number]
 const RANGES: RangeKey[] = [...STATUS_RANGES]
@@ -60,6 +61,8 @@ export interface Overview {
   uptime: number | null
   tps: number | null
   mspt: number | null
+  tps_reason?: string | null
+  mspt_reason?: string | null
   cpu: CpuInfo
   memory: MemInfo
   disk: DiskInfo
@@ -197,7 +200,7 @@ const ServerStatusDetail: React.FC = () => {
   /** 表格行 */
   interface TableRow {
     group: string
-    items: { label: string; current: string; avg: string; min: string; max: string }[]
+    items: { label: string; current: string; avg: string; min: string; max: string; notice?: React.ReactNode }[]
   }
 
   const rows: TableRow[] = (() => {
@@ -225,8 +228,8 @@ const ServerStatusDetail: React.FC = () => {
       {
         group: t('page.status.group_server'),
         items: [
-          { label: 'TPS', current: formatTps(overview.tps), ...tps },
-          { label: t('page.status.mspt'), current: formatMspt(overview.mspt), ...mspt },
+          { label: 'TPS', current: formatTps(overview.tps), ...tps, notice: <MetricUnavailableNotice metric="tps" reason={overview.tps_reason} /> },
+          { label: t('page.status.mspt'), current: formatMspt(overview.mspt), ...mspt, notice: <MetricUnavailableNotice metric="mspt" reason={overview.mspt_reason} /> },
         ],
       },
       {
@@ -483,7 +486,7 @@ const ServerStatusDetail: React.FC = () => {
                           {item.label}
                         </td>
                         <td className="px-3 py-2 text-right text-slate-900 dark:text-white font-semibold tabular-nums whitespace-nowrap">
-                          {item.current}
+                          {item.current}{item.notice}
                         </td>
                         <td className="px-3 py-2 text-right text-slate-600 dark:text-slate-400 tabular-nums whitespace-nowrap">
                           {item.avg}

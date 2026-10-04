@@ -534,12 +534,24 @@ class MonitorService:
 
         disk_path, disk_total, disk_used, disk_percent = self._disk_cache or ("server", None, None, None)
 
+        tps_value = latest.get("tps") if latest else None
+        mspt_value = latest.get("mspt") if latest else None
+        if not online:
+            metric_reason = "server_offline"
+        elif not self.server.is_rcon_running():
+            metric_reason = "rcon_unavailable"
+        elif not latest:
+            metric_reason = "sampling_pending"
+        else:
+            metric_reason = "commands_unsupported"
         return {
             "ts": int(time.time()),
             "online": online,
             "uptime": uptime,
-            "tps": latest.get("tps") if latest else None,
-            "mspt": latest.get("mspt") if latest else None,
+            "tps": tps_value,
+            "mspt": mspt_value,
+            "tps_reason": metric_reason if tps_value is None else None,
+            "mspt_reason": metric_reason if mspt_value is None else None,
             "cpu": {
                 "system": latest.get("cpu_sys") if latest else None,
                 "minecraft": latest.get("cpu_mc") if latest else None,
