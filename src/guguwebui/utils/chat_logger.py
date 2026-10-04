@@ -4,6 +4,9 @@ import logging
 import struct
 from pathlib import Path
 
+from .storage import connect, has_meta, set_meta
+from guguwebui.constant import STATIC_PATH
+
 logger = logging.getLogger(__name__)
 
 
@@ -12,20 +15,14 @@ class ChatLogger:
 
     def __init__(self, data_dir=None):
         if data_dir is None:
-            data_dir = Path("guguwebui_static")
+            data_dir = Path(STATIC_PATH)
         self.data_dir = Path(data_dir)
-        self.chat_messages_file = self.data_dir / "chat_messages.bin"
-        self.chat_index_file = self.data_dir / "chat_index.json"
-        self.message_positions_file = self.data_dir / "message_positions.json"  # 新增：消息位置索引
+        self.chat_messages_file = self.data_dir / "chat_messages.bin"  # legacy import source
+        self.message_positions_file = self.data_dir / "message_positions.json"  # legacy import source
 
-        # 确保数据目录存在
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # 初始化索引
-        self._init_index()
-
-        # 消息计数器
-        self._message_counter = self._get_next_message_id()
+        self._migrate_legacy_messages()
 
         # 内存缓存：最近的消息（最多缓存1000条）
         self._message_cache = []
@@ -36,30 +33,50 @@ class ChatLogger:
         self._positions_cache = {}
         self._positions_loaded = False
 
+    def _migrate_legacy_messages(self):
+        """Import the legacy binary log into SQLite once, preserving message IDs."""
+        if has_meta("chat_messages_v1"):
+            return
+        conn = connect()
+        try:
+            if self.chat_messages_file.exists():
+                try:
+                    data = self.chat_messages_file.read_bytes()
+                    offset = 0
+                    while offset < len(data):
+                        message, new_offset = self._unpack_message(data, offset)
+                        if message is None or new_offset <= offset:
+                            break
+                        converted = self._convert_to_serializable(message)
+                        conn.execute(
+                            "INSERT OR IGNORE INTO chat_messages "
+                            "(id,timestamp_ms,player_id,message,message_type,rtext_json,player_uuid) "
+                            "VALUES(?,?,?,?,?,?,?)",
+                            (
+                                converted["id"], converted["timestamp_ms"], converted["player_id"],
+                                converted["message"], 2 if converted.get("is_plugin") else (
+                                    1 if converted.get("message_source") == "webui" else 0
+                                ), json.dumps(converted.get("rtext_data"), ensure_ascii=False)
+                                if converted.get("rtext_data") is not None else None,
+                                converted.get("uuid"),
+                            ),
+                        )
+                        offset = new_offset
+                except OSError:
+                    pass
+            conn.commit()
+        finally:
+            conn.close()
+        set_meta("chat_messages_v1")
+
     def _init_index(self):
-        """初始化索引文件"""
-        if not self.chat_index_file.exists():
-            index = {
-                "message_count": 0,
-                "next_message_id": 1,
-                "file_size": 0
-            }
-            self._write_index(index)
+        return None
 
     def _read_index(self):
-        """读取索引文件"""
-        try:
-            with open(self.chat_index_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            # 如果索引文件损坏，重新初始化
-            self._init_index()
-            return self._read_index()
+        return {"message_count": self.get_message_count(), "next_message_id": self.get_last_message_id() + 1}
 
     def _write_index(self, index):
-        """写入索引文件"""
-        with open(self.chat_index_file, 'w', encoding='utf-8') as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
+        return None
 
     def _load_positions_index(self):
         """加载消息位置索引"""
@@ -467,49 +484,69 @@ class ChatLogger:
             except Exception:
                 player_uuid = None  # 获取失败时设为None
 
-        # 获取下一个消息ID
-        message_id = self._get_next_message_id()
-
-        # 打包消息（包含UUID）
-        packed_message = self._pack_message(message_id, player_id, message, timestamp, rtext_data, message_type,
-                                            player_uuid)
-
-        # 记录当前文件位置（追加前）
-        current_position = self.chat_messages_file.stat().st_size if self.chat_messages_file.exists() else 0
-
-        # 追加到文件
-        with open(self.chat_messages_file, 'ab') as f:
-            f.write(packed_message)
-
-        # 添加位置索引
-        self._add_position_to_index(message_id, current_position)
-
-        # 更新索引
-        index = self._read_index()
-        index["message_count"] += 1
-        index["next_message_id"] = message_id + 1
-        index["file_size"] = self.chat_messages_file.stat().st_size
-        self._write_index(index)
-
-        # 添加到内存缓存（timestamp_str 仅用于内部兼容旧文件格式，不再随 API 输出）
-        self._add_to_cache({
-            'id': message_id,
-            'player_id': player_id,
-            'message': message,
-            'timestamp': int(timestamp.timestamp()),
-            'timestamp_ms': int(timestamp.timestamp() * 1000),
-            'is_rtext': rtext_data is not None,
-            'rtext_data': rtext_data,
-            'is_plugin': message_type == 2,
-            'plugin_id': player_id if message_type == 2 else None,
-            'uuid': player_uuid,  # 使用获取到的UUID
-            'message_source': 'plugin' if message_type == 2 else ('webui' if message_type == 1 else 'game')
-        })
-
+        conn = connect()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO chat_messages "
+                "(timestamp_ms,player_id,message,message_type,rtext_json,player_uuid) VALUES(?,?,?,?,?,?)",
+                (
+                    int(timestamp.timestamp() * 1000), player_id, message, int(message_type),
+                    json.dumps(rtext_data, ensure_ascii=False) if rtext_data is not None else None,
+                    player_uuid,
+                ),
+            )
+            message_id = int(cursor.lastrowid)
+            conn.commit()
+        finally:
+            conn.close()
+        self._add_to_cache(self._message_from_row({
+            "id": message_id, "timestamp_ms": int(timestamp.timestamp() * 1000),
+            "player_id": player_id, "message": message, "message_type": message_type,
+            "rtext_json": json.dumps(rtext_data, ensure_ascii=False) if rtext_data is not None else None,
+            "player_uuid": player_uuid,
+        }))
         return message_id
 
+    @staticmethod
+    def _message_from_row(row):
+        message_type = int(row["message_type"] or 0)
+        try:
+            rtext_data = json.loads(row["rtext_json"]) if row["rtext_json"] else None
+        except (TypeError, json.JSONDecodeError):
+            rtext_data = None
+        timestamp_ms = int(row["timestamp_ms"] or 0)
+        return {
+            "id": int(row["id"]), "player_id": row["player_id"], "message": row["message"],
+            "timestamp": timestamp_ms // 1000, "timestamp_ms": timestamp_ms,
+            "is_rtext": rtext_data is not None, "rtext_data": rtext_data,
+            "is_plugin": message_type == 2,
+            "plugin_id": row["player_id"] if message_type == 2 else None,
+            "uuid": row["player_uuid"],
+            "message_source": "plugin" if message_type == 2 else ("webui" if message_type == 1 else "game"),
+        }
+
+    def _query_sql_messages(self, limit, offset=0, after_id=None, before_id=None):
+        clauses = []
+        params = []
+        if after_id is not None:
+            clauses.append("id > ?")
+            params.append(int(after_id))
+        if before_id is not None:
+            clauses.append("id < ?")
+            params.append(int(before_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        order = "ASC" if after_id is not None else "DESC"
+        sql = "SELECT id,timestamp_ms,player_id,message,message_type,rtext_json,player_uuid " \
+              f"FROM chat_messages{where} ORDER BY id {order} LIMIT ? OFFSET ?"
+        params.extend([max(1, int(limit)), max(0, int(offset))])
+        conn = connect()
+        try:
+            return [self._message_from_row(row) for row in conn.execute(sql, params).fetchall()]
+        finally:
+            conn.close()
+
     def get_messages(self, limit=50, offset=0, after_id=None, before_id=None):
-        """获取消息（优化版本）
+        """获取消息；接口统一保证最新优先，游标查询按消息 ID 稳定排序。
 
         Args:
             limit: 限制返回的消息数量
@@ -517,25 +554,8 @@ class ChatLogger:
             after_id: 只返回ID大于此值的消息（新消息）
             before_id: 只返回ID小于此值的消息（历史消息）
         """
-        if not self.chat_messages_file.exists():
-            return []
-
         try:
-            # 优化1：新消息查询 - 优先使用缓存
-            if after_id is not None:
-                return self._get_new_messages_optimized(after_id, limit)
-
-            # 优化2：最近消息查询 - 使用缓存
-            if offset == 0 and before_id is None:
-                return self._get_recent_messages_optimized(limit)
-
-            # 优化3：历史消息查询 - 使用位置索引
-            if before_id is not None:
-                return self._get_historical_messages_optimized(before_id, limit)
-
-            # 传统的offset查询（兼容性）
-            return self._get_messages_with_offset(limit, offset)
-
+            return self._query_sql_messages(limit, offset=offset, after_id=after_id, before_id=before_id)
         except Exception as e:
             logger.warning(f"读取消息失败: {e}")
             return []
@@ -700,30 +720,34 @@ class ChatLogger:
 
     def get_message_count(self):
         """获取消息总数"""
-        index = self._read_index()
-        return index.get("message_count", 0)
+        conn = connect()
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0])
+        finally:
+            conn.close()
 
     def get_last_message_id(self):
         """获取最后一条消息的ID"""
-        index = self._read_index()
-        return index.get("next_message_id", 1) - 1
+        conn = connect()
+        try:
+            row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM chat_messages").fetchone()
+            return int(row[0])
+        finally:
+            conn.close()
 
     def clear_messages(self):
         """清空所有消息"""
+        conn = connect()
+        try:
+            conn.execute("DELETE FROM chat_messages")
+            conn.execute("DELETE FROM sqlite_sequence WHERE name='chat_messages'")
+            conn.commit()
+        finally:
+            conn.close()
         if self.chat_messages_file.exists():
             self.chat_messages_file.unlink()
-
-        # 清理位置索引文件
         if self.message_positions_file.exists():
             self.message_positions_file.unlink()
-
-        # 重置索引
-        index = {
-            "message_count": 0,
-            "next_message_id": 1,
-            "file_size": 0
-        }
-        self._write_index(index)
 
         # 清理内存缓存
         self._message_cache = []

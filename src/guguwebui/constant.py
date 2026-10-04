@@ -3,11 +3,13 @@ from pathlib import Path
 import ruamel.yaml
 from passlib.context import CryptContext
 
-from guguwebui.utils.table import Table
+from guguwebui.utils.storage import SQLiteTable
+from guguwebui.utils.storage_migration import ensure_storage_layout
 
 ALGORITHM = "HS256"
 SECRET_KEY = "guguwebui"
-STATIC_PATH = "./guguwebui_static"
+STATIC_PATH = "./config/guguwebui/guguwebui_static"
+DATA_DB_PATH = Path("./config") / "guguwebui" / "guguwebui.sqlite3"
 USER_DB_PATH = Path(STATIC_PATH) / "db.json"
 AUDIT_LOG_PATH = Path(STATIC_PATH) / "audit_log.bin"
 PLAYER_STATS_PATH = Path(STATIC_PATH) / "player_stats.json"
@@ -131,4 +133,5 @@ DEFALUT_CONFIG = {
     "panel_master": {"allowed_tokens": [], "allowed_master_ips": []},
 }
 
-user_db = Table(USER_DB_PATH, default_content=DEFALUT_DB)
+ensure_storage_layout()
+user_db = SQLiteTable("user_db", default_content=DEFALUT_DB)

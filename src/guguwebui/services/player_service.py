@@ -21,10 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import javaproperties
 
-from guguwebui.constant import (
-    PLAYER_STATS_PATH,
-    PLAYER_STATS_SESSION_RETENTION_DAYS,
-)
+from guguwebui.constant import PLAYER_STATS_PATH, PLAYER_STATS_SESSION_RETENTION_DAYS
+from guguwebui.utils.storage import get_state, set_state
 from guguwebui.services.monitor_service import RANGE_MAP
 from guguwebui.utils.api_cache import api_cache
 from guguwebui.utils.mc_util import format_uuid, get_minecraft_path
@@ -183,17 +181,21 @@ class PlayerService:
 
     def _load_stats(self) -> Dict[str, Any]:
         with _STATS_LOCK:
-            data = self._load_json(PLAYER_STATS_PATH, _DEFAULT_STATS)
+            # Retain the old override hook used by integrations/tests; production uses SQLite.
+            data = get_state("player_stats", "data", _DEFAULT_STATS)
+            if Path(PLAYER_STATS_PATH) != Path("./config/guguwebui/guguwebui_static/player_stats.json"):
+                data = self._load_json(PLAYER_STATS_PATH, _DEFAULT_STATS)
             if not isinstance(data, dict):
                 data = _DEFAULT_STATS
-            # 深拷贝：文件不存在 / 内容为假值时会回落到模块级 _DEFAULT_STATS，
-            # 直接返回共享对象会被后续 setdefault/append 就地修改而跨实例串数据
             return copy.deepcopy(data)
 
     def _save_stats(self, stats: Dict[str, Any]) -> None:
         with _STATS_LOCK:
             self._prune_sessions(stats)
-            self._save_json(PLAYER_STATS_PATH, stats)
+            if Path(PLAYER_STATS_PATH) != Path("./config/guguwebui/guguwebui_static/player_stats.json"):
+                self._save_json(PLAYER_STATS_PATH, stats)
+            else:
+                set_state("player_stats", "data", stats)
 
     @staticmethod
     def _prune_sessions(stats: Dict[str, Any]) -> None:

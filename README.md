@@ -67,7 +67,7 @@
 3. 重启 MCDR 或在控制台执行 `!!MCDR admin reload all`。
 
 > [!IMPORTANT]
-> **升级提示 (v1.3.0+和v1.7.0+)**: 如果从旧版本升级，请删除 `guguwebui_static` 文件夹内文件和文件夹，仅保留 `db.json`（如需保留最近 7 天的服务器状态监控历史，请一并保留 `monitor.db`）。
+> **升级提示**: WebUI 会自动将旧版 `guguwebui_static` 迁移到 `config/guguwebui/guguwebui_static`，并将插件自有数据合并到 `config/guguwebui/guguwebui.sqlite3`。旧文件会保留，建议升级前备份。
 > **数据说明**: 重载本插件会同步更新静态资源。若手动修改过插件目录内的文件，请注意备份。
 
 ### 账户初始化

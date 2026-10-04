@@ -1,7 +1,8 @@
-"""操作层审计：追加写入 guguwebui_static/audit_log.bin（长度前缀 + UTF-8 JSON）。"""
+"""SQLite-backed operation audit storage with legacy binary import support."""
 
 from __future__ import annotations
 
+import json
 import json
 import struct
 import threading
@@ -9,14 +10,13 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from guguwebui.utils.storage import connect
 from guguwebui.constant import AUDIT_LOG_PATH as _AUDIT_CONST
 from guguwebui.utils.audit_actor import account_snapshot_from_user
 
 AUDIT_LOG_PATH = _AUDIT_CONST
 
 _LOCK = threading.Lock()
-_UINT32_BE = struct.Struct(">I")
-
 # detail 中单字段字符串最大长度，防止异常大对象
 _MAX_DETAIL_STR = 8000
 
@@ -51,11 +51,21 @@ def append_record(record: Dict[str, Any]) -> None:
             "account": record.get("account"),
         }
         payload = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    _ensure_parent()
-    frame = _UINT32_BE.pack(len(payload)) + payload
     with _LOCK:
-        with open(AUDIT_LOG_PATH, "ab") as f:
-            f.write(frame)
+        conn = connect()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO audit_records "
+                "(id,ts,operation_type,summary,detail_json,account_json) VALUES(?,?,?,?,?,?)",
+                (
+                    record["id"], float(record.get("ts") or 0), record.get("operation_type"),
+                    record.get("summary"), json.dumps(record.get("detail"), ensure_ascii=False),
+                    json.dumps(record.get("account"), ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def record_operation(
@@ -106,9 +116,27 @@ def list_records(
 ) -> tuple[List[Dict[str, Any]], int]:
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
-    with _LOCK:
-        rows = _read_all_records_unlocked()
-    total = len(rows)
-    rows.sort(key=lambda r: float(r.get("ts") or 0), reverse=newest_first)
-    page = rows[offset : offset + limit]
-    return page, total
+    conn = connect()
+    try:
+        total = int(conn.execute("SELECT COUNT(*) FROM audit_records").fetchone()[0])
+        order = "DESC" if newest_first else "ASC"
+        rows = conn.execute(
+            f"SELECT id,ts,operation_type,summary,detail_json,account_json "
+            f"FROM audit_records ORDER BY ts {order} LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        page = []
+        for row in rows:
+            try:
+                detail = json.loads(row[4]) if row[4] else None
+            except json.JSONDecodeError:
+                detail = None
+            try:
+                account = json.loads(row[5]) if row[5] else None
+            except json.JSONDecodeError:
+                account = None
+            page.append({"id": row[0], "ts": row[1], "operation_type": row[2],
+                         "summary": row[3], "detail": detail, "account": account})
+        return page, total
+    finally:
+        conn.close()

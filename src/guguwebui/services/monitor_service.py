@@ -4,7 +4,7 @@
 
 - 后台守护线程每秒采样系统与 Minecraft 进程指标（psutil，MCDR 自带依赖）
 - 1 秒精度环形缓冲：保留最近 1 小时（仅内存）
-- 1 分钟均值：保留最近 7 天（SQLite 持久化到 guguwebui_static/monitor.db，
+- 1 分钟均值：保留最近 7 天（SQLite 持久化到 config/guguwebui/guguwebui.sqlite3，
   插件重载 / MCDR 重启后历史数据仍保留）
 
 TPS / MSPT 通过 MCDR RCON 优先执行原版 ``/tick query``（1.20.5+，一次查询同时给出平均
@@ -26,7 +26,7 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import psutil
 
-from guguwebui.constant import STATIC_PATH
+from guguwebui.constant import DATA_DB_PATH
 
 # 采样与保留配置
 SAMPLE_INTERVAL = 1.0  # 秒级采样间隔
@@ -64,7 +64,7 @@ FIELDS: Tuple[str, ...] = (
     "load15",
 )
 
-DB_PATH = Path(STATIC_PATH) / "monitor.db"
+DB_PATH = DATA_DB_PATH
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS minute_stats (
@@ -448,10 +448,6 @@ class MonitorService:
         self._minute_has_data = False
 
     def _db_connect(self) -> sqlite3.Connection:
-        try:
-            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
         conn = sqlite3.connect(str(DB_PATH))
         conn.execute(_SCHEMA)
         return conn

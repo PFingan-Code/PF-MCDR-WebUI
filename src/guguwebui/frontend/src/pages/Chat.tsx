@@ -34,6 +34,7 @@ const Chat: React.FC = () => {
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
   const [initialMessagesLoaded, setInitialMessagesLoaded] = useState(false)
   const [hasMoreMessages, setHasMoreMessages] = useState(true)
+  const [isInitialScrollPending, setIsInitialScrollPending] = useState(false)
   const [chatMessage, setChatMessage] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [lastSendAtMs, setLastSendAtMs] = useState(0)
@@ -46,6 +47,7 @@ const Chat: React.FC = () => {
   const chatContainerRef = useRef<HTMLDivElement>(null)
   const statusFetchingRef = useRef(false)
   const newMessagesFetchingRef = useRef(false)
+  const shouldScrollToNewMessagesRef = useRef(false)
 
   // Sync ref with state
   useEffect(() => {
@@ -67,18 +69,19 @@ const Chat: React.FC = () => {
     }
   }
 
-  // Handle auto-scroll only for new messages if user is at bottom
+  // Scroll after the initial batch is committed to the DOM; keep polling anchored only when already at bottom.
   useEffect(() => {
     if (!chatContainerRef.current || isLoadingMessages) return
-
     const container = chatContainerRef.current
     const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100
-
-    // Initial load or new messages when already at bottom
-    if (isAtBottom || chatMessages.length <= 50) {
-      scrollToBottom(chatMessages.length <= 50 ? 'auto' : 'smooth')
+    if (isInitialScrollPending) {
+      container.scrollTop = container.scrollHeight
+      setIsInitialScrollPending(false)
+    } else if (shouldScrollToNewMessagesRef.current && isAtBottom && chatMessages.length > 0) {
+      shouldScrollToNewMessagesRef.current = false
+      scrollToBottom('smooth')
     }
-  }, [chatMessages, isLoadingMessages])
+  }, [chatMessages, isLoadingMessages, isInitialScrollPending])
 
   const fetchInitialMessages = useCallback(async () => {
     setIsLoadingMessages(true)
@@ -86,9 +89,10 @@ const Chat: React.FC = () => {
       const resp = await api.get('/chat/messages', { params: { limit: 50, offset: 0 } })
       const d = unwrapData<{ items?: ChatMessage[] }>(resp)
       const msgs = d?.items || []
-      // Backend returns newest first [N, ..., O], we want [O, ..., N] for rendering
-      setChatMessages([...msgs].reverse())
+      // API returns newest first; the view is always oldest -> newest.
+      setChatMessages([...msgs].sort((a, b) => a.id - b.id))
       setHasMoreMessages(msgs.length > 0 && Math.min(...msgs.map((m: ChatMessage) => m.id)) > 1)
+      setIsInitialScrollPending(true)
     } catch (e) {
       console.error('Failed to load messages', e)
     } finally {
@@ -102,6 +106,9 @@ const Chat: React.FC = () => {
     newMessagesFetchingRef.current = true
 
     const currentMaxId = chatMessagesRef.current.length > 0 ? Math.max(...chatMessagesRef.current.map(m => m.id)) : 0
+    const container = chatContainerRef.current
+    shouldScrollToNewMessagesRef.current = !!container &&
+      container.scrollHeight - container.scrollTop <= container.clientHeight + 100
 
     try {
       const resp = await api.get('/chat/messages/incremental', {
@@ -109,9 +116,12 @@ const Chat: React.FC = () => {
       })
       const d = unwrapData<{ messages?: ChatMessage[]; online?: OnlineStatus }>(resp)
       if (d?.messages && d.messages.length > 0) {
-        // d.messages are newest, we append them to the end
-        const newMsgs = [...d.messages].reverse()
-        setChatMessages(prev => [...prev, ...newMsgs])
+        const newMsgs = [...d.messages].sort((a, b) => a.id - b.id)
+        setChatMessages(prev => {
+          const byId = new Map(prev.map(msg => [msg.id, msg]))
+          newMsgs.forEach(msg => byId.set(msg.id, msg))
+          return Array.from(byId.values()).sort((a, b) => a.id - b.id)
+        })
       }
       if (d?.online) {
         setOnlineStatus({
@@ -170,9 +180,13 @@ const Chat: React.FC = () => {
       const resp = await api.get('/chat/messages', { params: { limit, before_id: beforeId } })
       const d = unwrapData<{ items?: ChatMessage[] }>(resp)
       const msgs = d?.items || []
-      // msgs are newer -> older history. For state [Old -> New], prepend them reversed.
-      const historicalMsgs = [...msgs].reverse()
-      setChatMessages(prev => [...historicalMsgs, ...prev])
+      // History is returned newest -> oldest; prepend the sorted batch and deduplicate by ID.
+      const historicalMsgs = [...msgs].sort((a, b) => a.id - b.id)
+      setChatMessages(prev => {
+        const byId = new Map(prev.map(msg => [msg.id, msg]))
+        historicalMsgs.forEach(msg => byId.set(msg.id, msg))
+        return Array.from(byId.values()).sort((a, b) => a.id - b.id)
+      })
       setHasMoreMessages(msgs.length > 0 && Math.min(...msgs.map((m: ChatMessage) => m.id)) > 1)
 
       // After DOM update, restore scroll position
@@ -297,7 +311,7 @@ const Chat: React.FC = () => {
           >
             {hasMoreMessages && (
               <button
-                onClick={() => loadChatMessages(50, Math.min(...chatMessages.map(m => m.id)))}
+                onClick={() => chatMessages.length > 0 && loadChatMessages(50, Math.min(...chatMessages.map(m => m.id)))}
                 disabled={isLoadingMessages}
                 className="w-full py-2 text-xs font-bold text-slate-500 hover:text-blue-500 transition-colors flex items-center justify-center gap-2 mb-4"
               >

@@ -36,7 +36,8 @@ def get_base_dirs(server) -> List[Path]:
     base_dirs = [
         Path("config.yml").resolve(),
         Path("permission.yml").resolve(),
-        Path("./guguwebui_static").resolve(),
+        Path("./config/guguwebui/guguwebui_static").resolve(),
+        Path("./guguwebui_static").resolve(),  # legacy path during migration,
         Path("./config").resolve(),
     ]
     if server:
