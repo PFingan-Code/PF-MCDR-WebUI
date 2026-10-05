@@ -1,6 +1,6 @@
 {
     "id": "guguwebui",
-    "version": "1.10.0",
+    "version": "1.10.1",
     "name": "GUGU WebUI",
     "description": {
         "en_us": "Manage all plugins, mods, configurations, online plugin library, terminal, player and server management through webui",
