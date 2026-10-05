@@ -16,7 +16,7 @@ import {
   speedAxisTick,
 } from '../utils/format'
 import StatusChart, { ChartPoint, ChartSeriesDef } from './StatusChart'
-import { ChartSkeleton, MiniStatSkeleton, TableRowSkeleton } from './Skeleton'
+import { ChartSkeleton, MiniStatSkeleton, Skeleton, TableRowSkeleton } from './Skeleton'
 import { MetricUnavailableNotice } from './MetricUnavailableNotice'
 
 type RangeKey = (typeof STATUS_RANGES)[number]
@@ -380,21 +380,26 @@ const ServerStatusDetail: React.FC = () => {
       <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm p-5">
         <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
           <h3 className="font-bold text-slate-900 dark:text-white">{t('page.status.overview')}</h3>
-          <span
-            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border ${
-              overview?.online
-                ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 border-green-100 dark:border-green-900/30'
-                : 'bg-slate-50 dark:bg-slate-900/20 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-            }`}
-          >
+          {/* 概览未返回前不要显示“离线”，否则会先亮出一个错误状态 */}
+          {!overview ? (
+            <Skeleton className="h-7 w-28 rounded-full" />
+          ) : (
             <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                overview?.online ? 'bg-green-500 animate-pulse' : 'bg-slate-400'
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border ${
+                overview.online
+                  ? 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400 border-green-100 dark:border-green-900/30'
+                  : 'bg-slate-50 dark:bg-slate-900/20 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
               }`}
-            />
-            {overview?.online ? t('page.status.online') : t('page.status.offline')}
-            {overview?.online && overview.uptime != null && ` · ${formatUptime(overview.uptime)}`}
-          </span>
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  overview.online ? 'bg-green-500 animate-pulse' : 'bg-slate-400'
+                }`}
+              />
+              {overview.online ? t('page.status.online') : t('page.status.offline')}
+              {overview.online && overview.uptime != null && ` · ${formatUptime(overview.uptime)}`}
+            </span>
+          )}
         </div>
         {!overview ? (
           <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3">

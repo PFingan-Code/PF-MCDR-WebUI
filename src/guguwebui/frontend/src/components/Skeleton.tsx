@@ -118,6 +118,27 @@ export const TableRowSkeleton: React.FC<{ cols?: number; className?: string }> =
   </tr>
 )
 
+/** 模组列表行骨架（模组管理页 / 回收站）：图标 + 状态点 + 名称/详情两行 + 徽标 + 操作按钮 */
+export const ModRowSkeleton: React.FC<{ actions?: number }> = ({ actions = 4 }) => (
+  <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b last:border-b-0 border-slate-100 dark:border-slate-800">
+    <Skeleton className="h-9 w-9 rounded-lg shrink-0" />
+    <span className="h-2 w-2 rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />
+    <div className="min-w-0 flex-1 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Skeleton className="h-4 w-40 max-w-full" />
+        <Skeleton className="h-3 w-24" />
+      </div>
+      <Skeleton className="h-3 w-2/3 max-w-[22rem]" />
+    </div>
+    <Skeleton className="h-6 w-16 rounded-full" />
+    <div className="flex items-center gap-1">
+      {Array.from({ length: actions }).map((_, i) => (
+        <Skeleton key={i} className="h-8 w-8 rounded-lg" />
+      ))}
+    </div>
+  </div>
+)
+
 /** 配置文件列表行骨架（插件配置弹窗） */
 export const ConfigFileRowSkeleton: React.FC = () => (
   <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-800 rounded-2xl">

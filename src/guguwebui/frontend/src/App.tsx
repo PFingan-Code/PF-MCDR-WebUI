@@ -2,6 +2,7 @@ import React, { Suspense, lazy } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import Layout from './components/Layout'
+import { ModsPageSkeleton, ServerStatusPageSkeleton } from './components/PageSkeletons'
 import { useAuth } from './hooks/useAuth'
 
 // 路由级懒加载，将各页面拆成独立 chunk，减小主包体积
@@ -49,6 +50,16 @@ function AppContent() {
     </div>
   )
 
+  // 侧边栏内页的懒加载兜底：已提供页面骨架的路由用骨架，其余沿用居中文字
+  const layoutFallback =
+    location.pathname === '/status' ? (
+      <ServerStatusPageSkeleton />
+    ) : location.pathname === '/mods' ? (
+      <ModsPageSkeleton />
+    ) : (
+      fallback
+    )
+
   return (
     <Suspense fallback={fallback}>
       <Routes>
@@ -59,7 +70,7 @@ function AppContent() {
           element={
             isAuthenticated ? (
               <Layout>
-                <Suspense fallback={fallback}>
+                <Suspense fallback={layoutFallback}>
                   <Routes>
                     <Route path="/" element={<Navigate to="/index" replace />} />
                     <Route path="/index" element={<Dashboard />} />

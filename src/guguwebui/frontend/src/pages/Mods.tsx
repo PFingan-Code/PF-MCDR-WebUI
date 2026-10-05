@@ -23,7 +23,7 @@ import { ConfigForm, type GenericConfigObject } from '../components/ConfigForm'
 import { Modal } from '../components/Modal'
 import { ModIcon } from '../components/ModIcon'
 import { NiceSelect } from '../components/NiceSelect'
-import { ConfigFileRowSkeleton } from '../components/Skeleton'
+import { ConfigFileRowSkeleton, ModRowSkeleton } from '../components/Skeleton'
 import { useAuth } from '../hooks/useAuth'
 import api, { unwrapData } from '../utils/api'
 import { formatEpoch } from '../utils/format'
@@ -70,6 +70,7 @@ const Mods: React.FC = () => {
   const [mods, setMods] = useState<Mod[]>([])
   const [trash, setTrash] = useState<Array<{ id: string; filename: string; enabled: boolean; deleted_at: number }>>([])
   const [loading, setLoading] = useState(true)
+  const [trashLoading, setTrashLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'all' | 'enabled' | 'disabled'>('all')
   const [loader, setLoader] = useState('all')
@@ -114,11 +115,14 @@ const Mods: React.FC = () => {
   }, [showNotice, t])
 
   const refreshTrash = useCallback(async () => {
+    setTrashLoading(true)
     try {
       const response = await api.get('/mods/trash')
       setTrash(unwrapData<{ items?: typeof trash }>(response, {}).items || [])
     } catch (error) {
       showNotice(errorMessage(error).message || t('page.mods.load_failed'), 'error')
+    } finally {
+      setTrashLoading(false)
     }
   }, [showNotice, t])
 
@@ -327,7 +331,7 @@ const Mods: React.FC = () => {
           <div className="w-36"><NiceSelect value={loader} onChange={setLoader} options={loaders.map((item) => ({ value: item, label: item === 'all' ? t('page.mods.loader_all') : item }))} /></div>
         </div>
         <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-          {loading ? <div className="p-8 text-center text-sm text-slate-500">{t('common.notice_loading')}</div> : filteredMods.length === 0 ? <div className="p-8 text-center text-sm text-slate-500">{t('page.mods.empty')}</div> : filteredMods.map((mod) => <div key={mod.filename} className="flex flex-wrap items-center gap-3 px-4 py-3 border-b last:border-b-0 border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40">
+          {loading ? Array.from({ length: 6 }).map((_, index) => <ModRowSkeleton key={index} />) : filteredMods.length === 0 ? <div className="p-8 text-center text-sm text-slate-500">{t('page.mods.empty')}</div> : filteredMods.map((mod) => <div key={mod.filename} className="flex flex-wrap items-center gap-3 px-4 py-3 border-b last:border-b-0 border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/40">
             <ModIcon mod={mod} />
             <div className={`w-2 h-2 rounded-full shrink-0 ${mod.enabled ? 'bg-emerald-500' : 'bg-slate-400'}`} />
             <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-slate-900 dark:text-white truncate">{mod.name || mod.filename}</span><span className="font-mono text-xs text-slate-400 truncate">{mod.id}</span>{mod.loader !== 'unknown' && <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">{mod.loader}</span>}{mod.warnings.length > 0 && <span className="inline-flex items-center gap-1 text-[11px] text-amber-600"><AlertTriangle className="w-3 h-3" />{mod.warnings.length}</span>}</div><div className="text-xs text-slate-500 truncate">{mod.filename} · {mod.version || t('common.unknown')} · {formatBytes(mod.size)}</div></div>
@@ -335,7 +339,7 @@ const Mods: React.FC = () => {
             <div className="flex items-center gap-1"><button type="button" onClick={() => void toggleMod(mod)} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" title={mod.enabled ? t('page.mods.disable') : t('page.mods.enable')}><Power className="w-4 h-4" /></button><button type="button" onClick={() => void openConfigs(mod)} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" title={t('page.mods.config')}><FileCode2 className="w-4 h-4" /></button><button type="button" onClick={() => setDetailMod(mod)} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" title={t('page.mods.details')}><Info className="w-4 h-4" /></button><button type="button" onClick={() => void trashMod(mod)} className="p-2 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20" title={t('common.delete')}><Trash2 className="w-4 h-4" /></button></div>
           </div>)}
         </div>
-      </> : <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">{trash.length === 0 ? <div className="p-8 text-center text-sm text-slate-500">{t('page.mods.trash_empty')}</div> : trash.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-3 px-4 py-3 border-b last:border-b-0 border-slate-100 dark:border-slate-800"><Trash2 className="w-4 h-4 text-slate-400" /><div className="flex-1 min-w-0"><div className="font-medium truncate text-slate-900 dark:text-white">{item.filename}</div>              <div className="text-xs text-slate-500">{formatEpoch(item.deleted_at)} · {item.enabled ? t('page.mods.enabled') : t('page.mods.disabled')}</div></div><button type="button" onClick={() => void restoreTrash(item.id)} className="p-2 rounded-lg text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20" title={t('page.mods.restore')}><RotateCcw className="w-4 h-4" /></button>{isSuperAdmin && <button type="button" onClick={() => void purgeTrash(item.id)} className="p-2 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20" title={t('page.mods.purge')}><Trash2 className="w-4 h-4" /></button>}</div>)}</div>}
+      </> : <div className="overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">{trashLoading && trash.length === 0 ? Array.from({ length: 5 }).map((_, index) => <ModRowSkeleton key={index} actions={2} />) : trash.length === 0 ? <div className="p-8 text-center text-sm text-slate-500">{t('page.mods.trash_empty')}</div> : trash.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-3 px-4 py-3 border-b last:border-b-0 border-slate-100 dark:border-slate-800"><Trash2 className="w-4 h-4 text-slate-400" /><div className="flex-1 min-w-0"><div className="font-medium truncate text-slate-900 dark:text-white">{item.filename}</div>              <div className="text-xs text-slate-500">{formatEpoch(item.deleted_at)} · {item.enabled ? t('page.mods.enabled') : t('page.mods.disabled')}</div></div><button type="button" onClick={() => void restoreTrash(item.id)} className="p-2 rounded-lg text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20" title={t('page.mods.restore')}><RotateCcw className="w-4 h-4" /></button>{isSuperAdmin && <button type="button" onClick={() => void purgeTrash(item.id)} className="p-2 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20" title={t('page.mods.purge')}><Trash2 className="w-4 h-4" /></button>}</div>)}</div>}
 
       {detailMod && <Modal isOpen={true} onClose={() => setDetailMod(null)} closeLabel={t('common.close')} title={detailMod.name || detailMod.filename}>
         <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
