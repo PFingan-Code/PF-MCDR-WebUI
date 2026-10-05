@@ -34,9 +34,11 @@ jobs:
       working-directory: src/guguwebui/frontend
       run: pnpm typecheck
 
-    - name: Run frontend format unit tests
+    - name: Run frontend unit tests (format / online members)
       working-directory: src/guguwebui/frontend
-      run: pnpm test:format
+      run: |
+        pnpm test:format
+        pnpm test:online-members
 
     - name: Setup Python
       uses: actions/setup-python@v5

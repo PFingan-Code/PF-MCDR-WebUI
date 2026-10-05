@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next'
 import { MessageLineSkeleton } from '../components/Skeleton'
 import { useAuth } from '../hooks/useAuth'
 import api, { unwrapData } from '../utils/api'
+import { mergeOnlineMembers, type OnlineMemberStatus } from '../utils/onlineMembers'
 import { parseRText } from '../utils/rtextParser'
 import type { ChatMessage, ChatOnlineStatus } from '../types/api'
 
@@ -38,6 +39,7 @@ const Chat: React.FC = () => {
   const [chatMessage, setChatMessage] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [lastSendAtMs, setLastSendAtMs] = useState(0)
+  const [sendError, setSendError] = useState('')
 
   // Server state
   const [serverStatus, setServerStatus] = useState<ServerStatus>({ status: 'unknown', version: '', players: '0/0' })
@@ -203,6 +205,11 @@ const Chat: React.FC = () => {
     }
   }
 
+  const notifySendError = (message: string) => {
+    setSendError(message)
+    setTimeout(() => setSendError(''), 4000)
+  }
+
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault()
     if (!chatMessage.trim() || isSending) return
@@ -222,10 +229,12 @@ const Chat: React.FC = () => {
         setLastSendAtMs(Date.now())
         loadNewMessages()
       } else {
-        console.error('Send failed', resp.data.message)
+        notifySendError(resp.data.message || t('page.chat.msg.send_failed'))
       }
     } catch (e) {
-      console.error('Network send failed', e)
+      // 后端拒绝（会话失效 / 聊天到游戏未启用等）时必须提示，避免“发送后无反应”
+      const err = e as { response?: { data?: { message?: string } } }
+      notifySendError(err?.response?.data?.message || t('page.chat.msg.network_send_failed'))
     } finally {
       setIsSending(false)
     }
@@ -269,6 +278,17 @@ const Chat: React.FC = () => {
     const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     return time
   }
+
+  // 同一玩家可能同时游戏内 + 网页在线：合并为一条，避免同名重复显示。
+  // 仍按来源分组，但已归入“游戏内/假人”的玩家不会再出现在“网页”分组里。
+  const onlineMembers = mergeOnlineMembers(onlineStatus)
+  const gameMembers = onlineMembers.filter(member => member.statuses.includes('game'))
+  const botMembers = onlineMembers.filter(
+    member => member.statuses.includes('bot') && !member.statuses.includes('game')
+  )
+  const webMembers = onlineMembers.filter(
+    member => member.statuses.includes('web') && !member.statuses.includes('game') && !member.statuses.includes('bot')
+  )
 
   return (
     <div className="h-[calc(100vh-8rem)] flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -341,6 +361,9 @@ const Chat: React.FC = () => {
 
           {/* Input Area */}
           <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800">
+            {sendError && (
+              <p className="mb-2 text-xs text-red-500">{sendError}</p>
+            )}
             <form onSubmit={handleSendMessage} className="flex gap-2">
               <input
                 type="text"
@@ -379,29 +402,29 @@ const Chat: React.FC = () => {
               </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
                 {/* Game Players */}
-                {onlineStatus.game.length > 0 && (
+                {gameMembers.length > 0 && (
                   <div className="mb-4">
                     <p className="px-2 mb-1 text-[10px] font-black text-slate-400 uppercase tracking-widest">{t('page.chat.offline.status_game')}</p>
-                    {onlineStatus.game.map(name => (
-                      <PlayerItem key={name} name={name} status="game" onKick={() => handleKickPlayer(name)} />
+                    {gameMembers.map(member => (
+                      <PlayerItem key={member.name} name={member.name} statuses={member.statuses} onKick={() => handleKickPlayer(member.name)} />
                     ))}
                   </div>
                 )}
                 {/* Bots */}
-                {onlineStatus.bot.length > 0 && (
+                {botMembers.length > 0 && (
                   <div className="mb-4">
                     <p className="px-2 mb-1 text-[10px] font-black text-slate-400 uppercase tracking-widest">BOTS</p>
-                    {onlineStatus.bot.map(name => (
-                      <PlayerItem key={name} name={name} status="bot" onKick={() => handleKickPlayer(name)} />
+                    {botMembers.map(member => (
+                      <PlayerItem key={member.name} name={member.name} statuses={member.statuses} onKick={() => handleKickPlayer(member.name)} />
                     ))}
                   </div>
                 )}
                 {/* Web Players */}
-                {onlineStatus.web.length > 0 && (
+                {webMembers.length > 0 && (
                   <div className="mb-4">
                     <p className="px-2 mb-1 text-[10px] font-black text-slate-400 uppercase tracking-widest">{t('page.chat.offline.status_web')}</p>
-                    {onlineStatus.web.map(name => (
-                      <PlayerItem key={name} name={name} status="web" />
+                    {webMembers.map(member => (
+                      <PlayerItem key={member.name} name={member.name} statuses={member.statuses} />
                     ))}
                   </div>
                 )}
@@ -414,12 +437,22 @@ const Chat: React.FC = () => {
   )
 }
 
-const PlayerItem: React.FC<{ name: string; status: 'web' | 'game' | 'bot'; onKick?: () => void }> = ({ name, status, onKick }) => {
+const MEMBER_DOT_CLASS: Record<OnlineMemberStatus, string> = {
+  game: 'bg-emerald-500',
+  web: 'bg-blue-500',
+  bot: 'bg-purple-500',
+}
+
+const PlayerItem: React.FC<{ name: string; statuses: OnlineMemberStatus[]; onKick?: () => void }> = ({ name, statuses, onKick }) => {
   return (
     <div className="flex items-center justify-between p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors group">
       <div className="flex items-center gap-2 min-w-0">
-        <div className={`w-2 h-2 rounded-full shrink-0 ${status === 'game' ? 'bg-emerald-500' : status === 'web' ? 'bg-blue-500' : 'bg-purple-500'
-          }`} />
+        {/* 同一玩家可能同时来自多个来源（游戏内 + 网页），逐个显示状态点 */}
+        <span className="flex items-center gap-0.5 shrink-0">
+          {statuses.map(status => (
+            <span key={status} className={`w-2 h-2 rounded-full ${MEMBER_DOT_CLASS[status]}`} />
+          ))}
+        </span>
         <span className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{name}</span>
       </div>
       {onKick && (

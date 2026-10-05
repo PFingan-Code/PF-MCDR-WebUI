@@ -733,9 +733,11 @@ def register_command(server: PluginServerInterface, host: str, port: int):
                                   get_temp_password_command)
 
     # 注册指令
+    # 根节点不限制权限：!!webui verify 是玩家自助绑定聊天页账号的入口，
+    # 普通玩家默认权限为 user(1)，此前根节点要求 admin(3) 会让玩家在根节点
+    # 就被拒绝（约束未满足: !!webui <--）。管理类子指令各自声明权限要求。
     server.register_command(
         Literal('!!webui')
-        .requires(lambda src: src.has_permission(3))
         .runs(lambda src, ctx: src.reply(__get_help_message()))
         .then(
             Literal('create')
@@ -770,8 +772,9 @@ def register_command(server: PluginServerInterface, host: str, port: int):
             .runs(lambda src, ctx: get_temp_password_command(src, ctx, host, port))
         )
         .then(
+            # verify 面向所有玩家开放；命令内部已校验调用者必须是游戏内玩家，
+            # 且验证码本身即为凭证（只有拿到验证码的玩家才能完成绑定）。
             Literal('verify')
-            .requires(lambda src: src.has_permission(1))
             .runs(lambda src, ctx: src.reply(__get_help_message()))
             .then(
                 Text('code')
@@ -781,6 +784,7 @@ def register_command(server: PluginServerInterface, host: str, port: int):
     )
 
     server.register_help_message("!!webui", "GUGUWebUI 相关指令", 3)
+    server.register_help_message("!!webui verify <code>", "验证聊天页验证码并绑定玩家", 1)
 
 
 def __get_help_message():

@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next'
 import VersionFooter from '../components/VersionFooter'
 import { MessageLineSkeleton } from '../components/Skeleton'
 import api, { unwrapData } from '../utils/api'
+import { countOnlinePlayers, mergeOnlineMembers, type OnlineMemberStatus } from '../utils/onlineMembers'
 import { parseRText } from '../utils/rtextParser'
 import type { ChatMessage, ChatOnlineStatus } from '../types/api'
 
@@ -495,6 +496,10 @@ const PlayerChat: React.FC = () => {
     return `${y}/${m}/${day} ${time}`
   }
 
+  // 同名玩家（同时游戏内 + 网页在线）合并为一条；公开聊天页不展示假人
+  const mergedOnlineMembers = mergeOnlineMembers(onlineStatus, { includeBots: false })
+  const onlinePlayerCount = countOnlinePlayers(onlineStatus)
+
   return (
     <div className="h-screen w-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center md:p-4 overflow-hidden relative">
       <div className="absolute top-0 right-0 -mr-48 -mt-48 w-96 h-96 bg-blue-500/10 rounded-full blur-xl pointer-events-none" />
@@ -525,7 +530,7 @@ const PlayerChat: React.FC = () => {
                 <h3 className="text-base md:text-lg font-black truncate text-slate-900 dark:text-white">{currentPlayer}</h3>
                 <div className="flex items-center gap-2 text-[10px] md:text-xs text-slate-500 font-bold uppercase tracking-wider">
                   <span className={`w-2 h-2 rounded-full ${serverStatus.status === 'running' ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-                  {serverStatus.players || (onlineStatus.game.length + onlineStatus.web.length > 0 ? `${onlineStatus.game.length + onlineStatus.web.length}/?` : '0/0')} {t('page.chat.header.players_online')}
+                  {serverStatus.players || (onlinePlayerCount > 0 ? `${onlinePlayerCount}/?` : '0/0')} {t('page.chat.header.players_online')}
                 </div>
               </div>
             </div>
@@ -646,8 +651,17 @@ const PlayerChat: React.FC = () => {
                     <button onClick={() => setShowOnlinePanel(false)} className="md:hidden p-2"><ChevronLeft /></button>
                   </div>
                   <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-                    {onlineStatus.game.map(name => <PlayerListItem key={name} name={name} uuid={playerUuidMap[name]} source={avatarSource} status="game" />)}
-                    {onlineStatus.web.map(name => <PlayerListItem key={name} name={name} uuid={playerUuidMap[name]} source={avatarSource} status="web" />)}
+                    {/* 合并渲染：同一玩家在游戏内与网页同时在线时只显示一条 */}
+                    {mergedOnlineMembers.map(member => (
+                      <PlayerListItem
+                        key={member.name}
+                        name={member.name}
+                        uuid={playerUuidMap[member.name]}
+                        source={avatarSource}
+                        status={member.statuses[0]}
+                        statuses={member.statuses}
+                      />
+                    ))}
                     {Object.entries(offlineMembers)
                       .filter(([, info]) => (Math.floor(Date.now() / 1000) - info.lastSeen) <= OFFLINE_HIDE_SECONDS)
                       .map(([name, info]) => (
@@ -917,7 +931,7 @@ const PlayerChat: React.FC = () => {
 }
 
 // PlayerListItem is defined outside to ensure stable reference
-const PlayerListItem: React.FC<{ name: string; uuid?: string; source: string; status: 'web' | 'game' | 'offline'; lastSeen?: number; t?: (key: string, options?: Record<string, unknown>) => string }> = ({ name, uuid, source, status, lastSeen, t }) => {
+const PlayerListItem: React.FC<{ name: string; uuid?: string; source: string; status: OnlineMemberStatus | 'offline'; statuses?: OnlineMemberStatus[]; lastSeen?: number; t?: (key: string, options?: Record<string, unknown>) => string }> = ({ name, uuid, source, status, statuses, lastSeen, t }) => {
   const getAvatar = () => {
     if (source === 'mccag') return `https://x.xzt.plus/api/generate/minimal/mojang/${name}`
     // MCHeads: use UUID when available (https://mc-heads.net/avatar/{uuid}/40)
@@ -932,20 +946,38 @@ const PlayerListItem: React.FC<{ name: string; uuid?: string; source: string; st
     return new Date(ts * 1000).toLocaleDateString()
   }
 
-  const statusLabel = status === 'offline' && lastSeen
-    ? formatOfflineTime(lastSeen)
-    : status === 'game'
+  // 合并在线时同时展示全部来源（如“游戏中 · 网页”）
+  const activeStatuses: OnlineMemberStatus[] = statuses && statuses.length > 0
+    ? statuses
+    : status === 'offline'
+      ? []
+      : [status]
+
+  const statusText = (value: OnlineMemberStatus) =>
+    value === 'game'
       ? (t?.('page.chat.offline.status_game') ?? 'game')
-      : status === 'web'
+      : value === 'web'
         ? (t?.('page.chat.offline.status_web') ?? 'web')
-        : status
+        : 'bot'
+
+  const statusLabel = status === 'offline'
+    ? (lastSeen ? formatOfflineTime(lastSeen) : 'offline')
+    : activeStatuses.map(statusText).join(' · ')
+
+  // 状态点颜色优先级：游戏内 > 网页 > 假人
+  const statusDotClass = activeStatuses.includes('game')
+    ? 'bg-emerald-500'
+    : activeStatuses.includes('web')
+      ? 'bg-blue-500'
+      : status === 'offline'
+        ? 'bg-slate-300 dark:bg-slate-600'
+        : 'bg-purple-500'
 
   return (
     <div className="flex items-center gap-3 p-2 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors group">
       <div className="relative shrink-0 w-10 h-10 rounded-xl overflow-hidden shadow-sm border border-white dark:border-slate-800">
         <img src={getAvatar()} alt={name} className={`w-full h-full object-cover ${source === 'mccag' ? 'scale-125' : ''}`} />
-        <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 border-2 border-white dark:border-slate-900 rounded-full ${status === 'game' ? 'bg-emerald-500' : status === 'web' ? 'bg-blue-500' : 'bg-slate-300 dark:bg-slate-600'
-          }`} />
+        <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 border-2 border-white dark:border-slate-900 rounded-full ${statusDotClass}`} />
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-bold text-slate-800 dark:text-slate-200 truncate">{name}</p>

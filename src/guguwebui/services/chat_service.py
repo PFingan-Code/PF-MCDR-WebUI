@@ -18,9 +18,7 @@ from guguwebui.utils.mc_util import (
     create_chat_logger_status_rtext,
     create_chat_message_rtext,
     get_bot_list,
-    get_java_server_info,
     get_player_uuid,
-    get_server_port,
 )
 
 
@@ -434,13 +432,15 @@ class ChatService:
             session["last_sent_ms"] = now_ms
             user_db.save()
 
-        config = self.config_service.get_config()
-        if not config.get("public_chat_to_game_enabled", False):
-            raise BusinessException(
-                "聊天到游戏功能未启用",
-                status_code=403,
-                code="chat_to_game_disabled",
-            )
+            # 该开关只约束公开聊天页；WebUI 管理端聊天页（is_admin）已通过登录态鉴权，
+            # 且本就有执行服务器指令的权限，不应被公开页开关拦截。
+            config = self.config_service.get_config()
+            if not config.get("public_chat_to_game_enabled", False):
+                raise BusinessException(
+                    "聊天到游戏功能未启用",
+                    status_code=403,
+                    code="chat_to_game_disabled",
+                )
 
         player_uuid = await get_player_uuid(player_id, self.server) or "未知"
         rtext_message = create_chat_message_rtext(player_id, message, player_uuid)
@@ -463,36 +463,6 @@ class ChatService:
         except Exception as e:
             self.server.logger.error(f"分发WebUI聊天消息事件失败: {e}")
 
-        # 检查在线人数
-        player_count = 0
-        try:
-            import javaproperties
-
-            from guguwebui.utils.mc_util import get_minecraft_path
-
-            with open(
-                get_minecraft_path(self.server, "working_directory")
-                + "/server.properties",
-                "r",
-            ) as f:
-                props = javaproperties.load(f)
-                mc_port = int(props.get("server-port", 25565))
-            info = await get_java_server_info(mc_port)
-            player_count = int(info.get("server_player_count", 0))
-        except Exception:
-            pass
-
-        if player_count <= 0:
-            self.chat_logger.add_message(
-                player_id,
-                message,
-                rtext_data=rtext_message.to_json_object(),
-                message_type=1,
-                server=self.server,
-            )
-            return {"message": "已记录（当前无在线玩家）"}
-
-        self.server.broadcast(rtext_message)
         WEB_ONLINE_PLAYERS[player_id] = int(time.time()) + 5
         self.chat_logger.add_message(
             player_id,
@@ -502,4 +472,29 @@ class ChatService:
             server=self.server,
         )
 
+        # 始终广播。旧实现先用 mcstatus 探测在线人数，探测失败（服务端关闭
+        # enable-status、Docker 内端口不可达等）会被当作“无人在线”而静默丢弃消息，
+        # 表现为聊天页提示已记录/发送成功，但游戏内收不到。
+        try:
+            self.server.broadcast(rtext_message)
+        except Exception as e:
+            self.server.logger.error(f"广播聊天消息到游戏失败: {e}")
+
+        if not self.server.is_server_running():
+            return {"message": "已记录（服务器未运行，未能广播到游戏）"}
+        if self._get_online_player_count() == 0:
+            return {"message": "已记录（当前无在线玩家）"}
         return {"message": "消息发送成功"}
+
+    def _get_online_player_count(self) -> Optional[int]:
+        """通过 RCON 获取在线人数；无法确定时返回 None（不得当作 0 处理）。"""
+        try:
+            if not self.server.is_rcon_running():
+                return None
+            feedback = self.server.rcon_query("list")
+            if not isinstance(feedback, str) or ":" not in feedback:
+                return None
+            names_part = feedback.split(":", 1)[1].strip()
+            return len([n for n in names_part.split(",") if n.strip()])
+        except Exception:
+            return None

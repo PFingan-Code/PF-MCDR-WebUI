@@ -8,6 +8,7 @@
         "preview": "vite preview",
         "typecheck": "tsc --noEmit",
         "test:format": "node scripts/test_format.cjs",
+        "test:online-members": "node scripts/test_online_members.cjs",
         "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
     },
     "dependencies": {
