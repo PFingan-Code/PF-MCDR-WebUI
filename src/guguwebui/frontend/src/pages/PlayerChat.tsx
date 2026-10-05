@@ -72,13 +72,12 @@ const PlayerChat: React.FC = () => {
   const [lastSendAtMs, setLastSendAtMs] = useState(0)
 
   // Server state
-  const [serverStatus, setServerStatus] = useState<ServerStatus>({ status: 'unknown', version: '', players: '0/0' })
+  const [serverStatus, setServerStatus] = useState<ServerStatus>({ status: 'unknown', version: '', players: '' })
   const [onlineStatus, setOnlineStatus] = useState<OnlineStatus>({ web: [], game: [], bot: [] })
   const [offlineMembers, setOfflineMembers] = useState<Record<string, OfflineMember>>({})
   const [showOnlinePanel, setShowOnlinePanel] = useState(false)
 
   // Preferences
-  const [avatarSource, setAvatarSource] = useState<'mccag' | 'mcheads'>('mccag')
   const [chatDisplayMode, setChatDisplayMode] = useState<'modern' | 'mc'>('modern')
   const [showSettings, setShowSettings] = useState(false)
 
@@ -102,8 +101,6 @@ const PlayerChat: React.FC = () => {
 
   // Initialize
   useEffect(() => {
-    const savedAvatar = localStorage.getItem('chat_avatar_source') as 'mccag' | 'mcheads'
-    if (savedAvatar) setAvatarSource(savedAvatar)
     const savedDisplayMode = localStorage.getItem('chat_display_mode') as 'modern' | 'mc'
     if (savedDisplayMode) setChatDisplayMode(savedDisplayMode)
 
@@ -204,14 +201,16 @@ const PlayerChat: React.FC = () => {
     if (statusFetchingRef.current) return
     statusFetchingRef.current = true
     try {
+      // 公开聊天页是匿名入口：用聊天会话 ID 换取该只读接口的访问权限
       const sessionId = localStorage.getItem('chat_session_id') || ''
       const url = sessionId ? `/server/status?session_id=${encodeURIComponent(sessionId)}` : '/server/status'
       const resp = await api.get(url)
       const st = unwrapData<{ online?: boolean; version?: string; players?: string }>(resp)
       setServerStatus({
-        status: st?.online ? 'online' : 'unknown',
+        status: st?.online ? 'online' : 'offline',
         version: st?.version || '',
-        players: st?.players || '0/0'
+        // 后端在拿不到人数时返回空串，不要伪造成 0/0
+        players: st?.players || ''
       })
     } catch (e) {
       // ignore status polling error
@@ -221,14 +220,13 @@ const PlayerChat: React.FC = () => {
     }
   }, [])
 
-  // 登录后立即拉取一次服务器状态，并单独轮询 get_server_status（不依赖 loadNewMessages，避免被 2 秒消息轮询导致 effect 反复清理）
+  // 登录后立即拉取一次服务器状态，并单独轮询（不依赖 loadNewMessages，避免被 2 秒消息轮询导致 effect 反复清理）
   useEffect(() => {
     if (!isLoggedIn) return
     fetchServerStatus()
     const statusTimer = setInterval(fetchServerStatus, 5000)
     return () => clearInterval(statusTimer)
   }, [isLoggedIn, fetchServerStatus])
-
   // 消息列表轮询：仅在登录且初始消息加载完成后开始，避免 get_new_messages 在 get_messages 完成前用 after_id: 0 请求
   useEffect(() => {
     if (!isLoggedIn || !initialMessagesLoaded) return
@@ -452,13 +450,9 @@ const PlayerChat: React.FC = () => {
     }
   }
 
-  const getAvatarUrl = (name: string, uuid?: string) => {
-    if (avatarSource === 'mccag') {
-      return `https://x.xzt.plus/api/generate/minimal/mojang/${name}`
-    }
-    // MCHeads: use UUID when available for stable avatar (https://mc-heads.net/avatar/{uuid}/64)
-    return `https://mc-heads.net/avatar/${uuid || name}/64`
-  }
+  // 头像统一使用 MCHeads（优先 UUID，保证头像稳定）：https://mc-heads.net/avatar/{uuid}/64
+  const getAvatarUrl = (name: string, uuid?: string) =>
+    `https://mc-heads.net/avatar/${uuid || name}/64`
 
   const renderMessageContent = (msg: ChatMessage): React.ReactNode => {
     if (msg.message_source === 'webui') return msg.message
@@ -522,15 +516,15 @@ const PlayerChat: React.FC = () => {
               <div className="w-10 h-10 md:w-12 md:h-12 rounded-xl md:rounded-2xl overflow-hidden shrink-0 shadow-sm border border-white dark:border-slate-800">
                 <img
                   src={getAvatarUrl(currentPlayer, currentPlayerUuid)}
-                  className={`w-full h-full object-cover ${avatarSource === 'mccag' ? 'scale-125' : ''}`}
+                  className="w-full h-full object-cover"
                   alt="avatar"
                 />
               </div>
               <div className="min-w-0">
                 <h3 className="text-base md:text-lg font-black truncate text-slate-900 dark:text-white">{currentPlayer}</h3>
                 <div className="flex items-center gap-2 text-[10px] md:text-xs text-slate-500 font-bold uppercase tracking-wider">
-                  <span className={`w-2 h-2 rounded-full ${serverStatus.status === 'running' ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-                  {serverStatus.players || (onlinePlayerCount > 0 ? `${onlinePlayerCount}/?` : '0/0')} {t('page.chat.header.players_online')}
+                  <span className={`w-2 h-2 rounded-full ${serverStatus.status === 'online' ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                  {serverStatus.players || onlinePlayerCount} {t('page.chat.header.players_online')}
                 </div>
               </div>
             </div>
@@ -589,7 +583,7 @@ const PlayerChat: React.FC = () => {
                         <div className={`w-8 h-8 md:w-10 md:h-10 rounded-lg md:rounded-xl overflow-hidden shrink-0 shadow-sm ${showHeader ? 'opacity-100' : 'opacity-0'}`}>
                           <img
                             src={getAvatarUrl(msg.player_id, msg.uuid)}
-                            className={`w-full h-full object-cover ${avatarSource === 'mccag' ? 'scale-125' : ''}`}
+                            className="w-full h-full object-cover"
                             alt=""
                           />
                         </div>
@@ -657,7 +651,6 @@ const PlayerChat: React.FC = () => {
                         key={member.name}
                         name={member.name}
                         uuid={playerUuidMap[member.name]}
-                        source={avatarSource}
                         status={member.statuses[0]}
                         statuses={member.statuses}
                       />
@@ -665,7 +658,7 @@ const PlayerChat: React.FC = () => {
                     {Object.entries(offlineMembers)
                       .filter(([, info]) => (Math.floor(Date.now() / 1000) - info.lastSeen) <= OFFLINE_HIDE_SECONDS)
                       .map(([name, info]) => (
-                        <PlayerListItem key={name} name={name} uuid={info.uuid} source={avatarSource} status="offline" lastSeen={info.lastSeen} t={t} />
+                        <PlayerListItem key={name} name={name} uuid={info.uuid} status="offline" lastSeen={info.lastSeen} t={t} />
                       ))}
                   </div>
                 </motion.div>
@@ -704,23 +697,6 @@ const PlayerChat: React.FC = () => {
                           className={`py-2 text-xs font-bold rounded-xl transition-all ${chatDisplayMode === 'mc' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow-sm' : 'text-slate-500'}`}
                         >
                           {t('page.chat.settings.display_mc')}
-                        </button>
-                      </div>
-                    </div>
-                    <div className="space-y-3">
-                      <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">{t('page.chat.settings.avatar_source_label')}</label>
-                      <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl">
-                        <button
-                          onClick={() => { setAvatarSource('mccag'); localStorage.setItem('chat_avatar_source', 'mccag'); }}
-                          className={`py-2 text-xs font-bold rounded-xl transition-all ${avatarSource === 'mccag' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow-sm' : 'text-slate-500'}`}
-                        >
-                          {t('page.chat.settings.avatar_mccag')}
-                        </button>
-                        <button
-                          onClick={() => { setAvatarSource('mcheads'); localStorage.setItem('chat_avatar_source', 'mcheads'); }}
-                          className={`py-2 text-xs font-bold rounded-xl transition-all ${avatarSource === 'mcheads' ? 'bg-white dark:bg-slate-700 text-blue-600 shadow-sm' : 'text-slate-500'}`}
-                        >
-                          {t('page.chat.settings.avatar_mcheads')}
                         </button>
                       </div>
                     </div>
@@ -931,12 +907,9 @@ const PlayerChat: React.FC = () => {
 }
 
 // PlayerListItem is defined outside to ensure stable reference
-const PlayerListItem: React.FC<{ name: string; uuid?: string; source: string; status: OnlineMemberStatus | 'offline'; statuses?: OnlineMemberStatus[]; lastSeen?: number; t?: (key: string, options?: Record<string, unknown>) => string }> = ({ name, uuid, source, status, statuses, lastSeen, t }) => {
-  const getAvatar = () => {
-    if (source === 'mccag') return `https://x.xzt.plus/api/generate/minimal/mojang/${name}`
-    // MCHeads: use UUID when available (https://mc-heads.net/avatar/{uuid}/40)
-    return `https://mc-heads.net/avatar/${uuid || name}/40`
-  }
+const PlayerListItem: React.FC<{ name: string; uuid?: string; status: OnlineMemberStatus | 'offline'; statuses?: OnlineMemberStatus[]; lastSeen?: number; t?: (key: string, options?: Record<string, unknown>) => string }> = ({ name, uuid, status, statuses, lastSeen, t }) => {
+  // 头像统一使用 MCHeads（优先 UUID）：https://mc-heads.net/avatar/{uuid}/40
+  const getAvatar = () => `https://mc-heads.net/avatar/${uuid || name}/40`
 
   const formatOfflineTime = (ts: number) => {
     const now = Math.floor(Date.now() / 1000)
@@ -976,7 +949,7 @@ const PlayerListItem: React.FC<{ name: string; uuid?: string; source: string; st
   return (
     <div className="flex items-center gap-3 p-2 rounded-2xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors group">
       <div className="relative shrink-0 w-10 h-10 rounded-xl overflow-hidden shadow-sm border border-white dark:border-slate-800">
-        <img src={getAvatar()} alt={name} className={`w-full h-full object-cover ${source === 'mccag' ? 'scale-125' : ''}`} />
+        <img src={getAvatar()} alt={name} className="w-full h-full object-cover" />
         <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 border-2 border-white dark:border-slate-900 rounded-full ${statusDotClass}`} />
       </div>
       <div className="flex-1 min-w-0">

@@ -1,12 +1,14 @@
+import datetime
 import ipaddress
+from typing import Optional
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Query, Request, status
 
 from guguwebui.constant import user_db
 from guguwebui.structures import ForbiddenException
 
-async def get_current_user(request: Request):
-    """获取当前登录用户，如果未登录则抛出 401 异常"""
+async def get_optional_user(request: Request) -> Optional[dict]:
+    """解析 WebUI 登录态（cookie 会话或子服 Panel Token）；未登录返回 None。"""
     # 1) 常规 cookie 登录（保持现有逻辑）
     token = request.cookies.get("token")
     if token and token in user_db.get("token", {}) and request.session.get("logged_in"):
@@ -17,8 +19,7 @@ async def get_current_user(request: Request):
     if config_service is not None:
         server_config = config_service.get_config()
         if server_config.get("panel_role", "master") == "slave":
-            panel_token = request.headers.get("X-Panel-Token") or ""
-            panel_token = panel_token.strip()
+            panel_token = (request.headers.get("X-Panel-Token") or "").strip()
             if panel_token:
                 panel_master = server_config.get("panel_master") or {}
                 allowed_tokens = panel_master.get("allowed_tokens") or []
@@ -36,7 +37,17 @@ async def get_current_user(request: Request):
                 if _panel_token_enabled(panel_token, allowed_tokens):
                     return {"username": "__panel__", "token": panel_token, "auth_via": "panel_token"}
 
+    return None
+
+
+async def get_current_user(request: Request) -> dict:
+    """获取当前登录用户，如果未登录则抛出 401 异常"""
+    user = await get_optional_user(request)
+    if user is not None:
+        return user
+
     # token 不存在或 session 无效：清理 session（避免前端误以为已登录）
+    token = request.cookies.get("token")
     if token and token not in user_db.get("token", {}):
         request.session.clear()
     raise HTTPException(
@@ -130,3 +141,55 @@ async def get_super_admin(request: Request, current_user: dict = Depends(get_cur
             "只有超级管理员可以执行该操作", code="super_admin_required"
         )
     return current_user
+
+
+def resolve_chat_session(session_id: str) -> Optional[dict]:
+    """校验公开聊天页会话：有效返回会话记录，否则返回 None。
+
+    公开聊天页是匿名入口，只持有 chat_session_id（由 /chat/sessions 签发）。
+    """
+    if not session_id:
+        return None
+    sessions = user_db.get("chat_sessions") or {}
+    if not isinstance(sessions, dict):
+        return None
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        return None
+    try:
+        expire_time = datetime.datetime.fromisoformat(
+            str(session.get("expire_time", "")).replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if datetime.datetime.now(datetime.timezone.utc) > expire_time:
+        return None
+    return session
+
+
+async def get_current_user_or_chat_session(
+    request: Request,
+    session_id: Optional[str] = Query(
+        None, description="公开聊天页会话 ID（匿名入口的访问凭证）"
+    ),
+    current_user: Optional[dict] = Depends(get_optional_user),
+) -> dict:
+    """WebUI 登录态，或公开聊天页的有效聊天会话。
+
+    公开聊天页面向匿名访客，需要读取服务器状态、自身版本等信息；这些只读接口
+    因此接受 chat_session_id 作为凭证。管理类接口仍只认 WebUI 登录态。
+    """
+    if current_user is not None:
+        return current_user
+
+    session = resolve_chat_session(session_id or "")
+    if session is not None:
+        return {
+            "username": session.get("player_id"),
+            "auth_via": "chat_session",
+            "chat_session_id": session_id,
+        }
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="User not logged in",
+    )

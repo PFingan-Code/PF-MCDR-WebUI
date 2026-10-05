@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from guguwebui.dependencies.auth import get_current_admin, get_current_user
+from guguwebui.dependencies.auth import (get_current_admin, get_current_user,
+                                         get_current_user_or_chat_session)
 from guguwebui.services.operation_audit_service import record_operation
 from guguwebui.structures import BusinessException
 from guguwebui.structures.envelope import ApiSuccessEnvelope, success
@@ -116,9 +117,12 @@ async def api_get_online_plugins(
 async def get_plugin(
     request: Request,
     plugin_id: str,
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(get_current_user_or_chat_session),
 ):
-    """获取单个插件元数据（不存在返回 404）"""
+    """获取单个插件元数据（不存在返回 404）
+
+    公开聊天页页脚需要展示 WebUI 版本，因此该只读接口同样接受聊天会话凭证。
+    """
     plugins = request.app.state.plugin_service.get_plugins_list()
     plugin = next((p for p in plugins if p.get("id") == plugin_id), None)
     if plugin is None:

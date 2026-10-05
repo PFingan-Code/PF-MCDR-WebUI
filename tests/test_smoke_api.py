@@ -25,11 +25,17 @@ def client():
     from guguwebui.dependencies.auth import (
         get_current_admin,
         get_current_user,
+        get_current_user_or_chat_session,
         get_super_admin,
     )
 
     # 让 TestClient 以“已登录管理员/超管”身份访问，跳过 cookie/会话
     app.dependency_overrides[get_current_user] = lambda: {
+        "username": "admin",
+        "token": "test-token",
+    }
+    # /server/status 等接口使用“登录态或公开聊天页会话”的复合依赖
+    app.dependency_overrides[get_current_user_or_chat_session] = lambda: {
         "username": "admin",
         "token": "test-token",
     }

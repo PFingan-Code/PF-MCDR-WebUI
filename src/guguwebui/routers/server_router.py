@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from guguwebui.dependencies.auth import get_current_admin, get_current_user
+from guguwebui.dependencies.auth import (get_current_admin, get_current_user,
+                                         get_current_user_or_chat_session)
 from guguwebui.services.operation_audit_service import record_operation
 from guguwebui.services.server_service import ServerService
 from guguwebui.structures import BusinessException
@@ -27,9 +28,12 @@ class ServerCommandRequest(BaseModel):
 @router.get("/status", response_model=ApiSuccessEnvelope)
 async def api_server_status(
     request: Request,
-    _user: dict = Depends(get_current_user),
+    _user: dict = Depends(get_current_user_or_chat_session),
 ):
-    """获取服务器状态（{online, version, players}，status 双义已消除）"""
+    """获取服务器状态（{online, version, players}，status 双义已消除）
+
+    公开聊天页为匿名入口，持有 chat_session_id 时同样可读（见 auth 依赖说明）。
+    """
     data = await request.app.state.server_service.get_server_status()
     return success(data)
 

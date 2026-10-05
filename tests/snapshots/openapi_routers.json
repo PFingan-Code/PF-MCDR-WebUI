@@ -477,7 +477,7 @@
     "/api/plugins/{plugin_id}": {
       "get": {
         "summary": "Get Plugin",
-        "description": "获取单个插件元数据（不存在返回 404）",
+        "description": "获取单个插件元数据（不存在返回 404）\n\n公开聊天页页脚需要展示 WebUI 版本，因此该只读接口同样接受聊天会话凭证。",
         "operationId": "get_plugin___api_plugins_{plugin_id}__GET",
         "parameters": [
           {
@@ -488,6 +488,24 @@
               "type": "string",
               "title": "Plugin Id"
             }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "公开聊天页会话 ID（匿名入口的访问凭证）",
+              "title": "Session Id"
+            },
+            "description": "公开聊天页会话 ID（匿名入口的访问凭证）"
           }
         ],
         "responses": {
@@ -1211,8 +1229,28 @@
           "server"
         ],
         "summary": "Api Server Status",
-        "description": "获取服务器状态（{online, version, players}，status 双义已消除）",
+        "description": "获取服务器状态（{online, version, players}，status 双义已消除）\n\n公开聊天页为匿名入口，持有 chat_session_id 时同样可读（见 auth 依赖说明）。",
         "operationId": "api_server_status___api_server_status__GET",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "公开聊天页会话 ID（匿名入口的访问凭证）",
+              "title": "Session Id"
+            },
+            "description": "公开聊天页会话 ID（匿名入口的访问凭证）"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1220,6 +1258,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApiSuccessEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1602,151 +1650,7 @@
       }
     },
     "/api/plugin/{plugin_id}": {
-      "put": {
-        "summary": "Plugin Api Root",
-        "description": "插件 API 代理：子路径为空。",
-        "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
-        "parameters": [
-          {
-            "name": "plugin_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Plugin Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "options": {
-        "summary": "Plugin Api Root",
-        "description": "插件 API 代理：子路径为空。",
-        "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
-        "parameters": [
-          {
-            "name": "plugin_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Plugin Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "head": {
-        "summary": "Plugin Api Root",
-        "description": "插件 API 代理：子路径为空。",
-        "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
-        "parameters": [
-          {
-            "name": "plugin_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Plugin Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Plugin Api Root",
-        "description": "插件 API 代理：子路径为空。",
-        "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
-        "parameters": [
-          {
-            "name": "plugin_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Plugin Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
+      "delete": {
         "summary": "Plugin Api Root",
         "description": "插件 API 代理：子路径为空。",
         "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
@@ -1818,7 +1722,151 @@
           }
         }
       },
-      "delete": {
+      "put": {
+        "summary": "Plugin Api Root",
+        "description": "插件 API 代理：子路径为空。",
+        "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
+        "parameters": [
+          {
+            "name": "plugin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plugin Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Plugin Api Root",
+        "description": "插件 API 代理：子路径为空。",
+        "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
+        "parameters": [
+          {
+            "name": "plugin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plugin Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "summary": "Plugin Api Root",
+        "description": "插件 API 代理：子路径为空。",
+        "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
+        "parameters": [
+          {
+            "name": "plugin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plugin Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "summary": "Plugin Api Root",
+        "description": "插件 API 代理：子路径为空。",
+        "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
+        "parameters": [
+          {
+            "name": "plugin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plugin Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Plugin Api Root",
         "description": "插件 API 代理：子路径为空。",
         "operationId": "plugin_api_root___api_plugin_{plugin_id}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
@@ -1856,187 +1904,7 @@
       }
     },
     "/api/plugin/{plugin_id}/{subpath}": {
-      "put": {
-        "summary": "Plugin Api Subpath",
-        "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
-        "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
-        "parameters": [
-          {
-            "name": "plugin_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Plugin Id"
-            }
-          },
-          {
-            "name": "subpath",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Subpath"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "options": {
-        "summary": "Plugin Api Subpath",
-        "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
-        "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
-        "parameters": [
-          {
-            "name": "plugin_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Plugin Id"
-            }
-          },
-          {
-            "name": "subpath",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Subpath"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "head": {
-        "summary": "Plugin Api Subpath",
-        "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
-        "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
-        "parameters": [
-          {
-            "name": "plugin_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Plugin Id"
-            }
-          },
-          {
-            "name": "subpath",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Subpath"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Plugin Api Subpath",
-        "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
-        "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
-        "parameters": [
-          {
-            "name": "plugin_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Plugin Id"
-            }
-          },
-          {
-            "name": "subpath",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Subpath"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
+      "delete": {
         "summary": "Plugin Api Subpath",
         "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
         "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
@@ -2126,7 +1994,187 @@
           }
         }
       },
-      "delete": {
+      "put": {
+        "summary": "Plugin Api Subpath",
+        "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
+        "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
+        "parameters": [
+          {
+            "name": "plugin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plugin Id"
+            }
+          },
+          {
+            "name": "subpath",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Subpath"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Plugin Api Subpath",
+        "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
+        "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
+        "parameters": [
+          {
+            "name": "plugin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plugin Id"
+            }
+          },
+          {
+            "name": "subpath",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Subpath"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "summary": "Plugin Api Subpath",
+        "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
+        "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
+        "parameters": [
+          {
+            "name": "plugin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plugin Id"
+            }
+          },
+          {
+            "name": "subpath",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Subpath"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "summary": "Plugin Api Subpath",
+        "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
+        "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",
+        "parameters": [
+          {
+            "name": "plugin_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Plugin Id"
+            }
+          },
+          {
+            "name": "subpath",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Subpath"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
         "summary": "Plugin Api Subpath",
         "description": "插件 API 代理：子路径为 url_path（如 abc 或 foo/bar）。",
         "operationId": "plugin_api_subpath___api_plugin_{plugin_id}_{subpath:path}__DELETE_GET_HEAD_OPTIONS_PATCH_POST_PUT",

@@ -552,10 +552,7 @@
                 "modal_title": "设置",
                 "display_mode_label": "显示模式",
                 "display_modern": "现代气泡",
-                "display_mc": "MC 模拟",
-                "avatar_source_label": "头像来源",
-                "avatar_mccag": "MCCAG (Minimal)",
-                "avatar_mcheads": "MCHeads (Original)"
+                "display_mc": "MC 模拟"
             },
             "offline": {
                 "just_offline": "刚刚离线",

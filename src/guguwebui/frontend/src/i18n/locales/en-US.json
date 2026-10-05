@@ -551,10 +551,7 @@
                 "modal_title": "Settings",
                 "display_mode_label": "Display mode",
                 "display_modern": "Modern bubbles",
-                "display_mc": "MC style",
-                "avatar_source_label": "Avatar source",
-                "avatar_mccag": "MCCAG (Minimal)",
-                "avatar_mcheads": "MCHeads (Original)"
+                "display_mc": "MC style"
             },
             "offline": {
                 "just_offline": "Just left",

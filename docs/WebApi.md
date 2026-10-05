@@ -162,7 +162,8 @@ SPA 由前端路由处理。
 
 ### GET /api/server/status — 服务器状态
 
-- 权限：登录。`data = {online: bool, version: string, players: string}`。
+- 权限：WebUI 登录态，或公开聊天页的有效会话（query `session_id`）。
+  `data = {online: bool, version: string, players: string}`。
 - 旧 `/api/get_server_status`（顶层 `status: "online|offline"` 双义）已下线。
 
 ### POST /api/server/controls — 启停控制
@@ -280,7 +281,8 @@ SPA 由前端路由处理。
 
 ### GET /api/plugins/{plugin_id} — 单个插件
 
-- 权限：登录。`data.plugin`；不存在 → **404** `plugin_not_found`。
+- 权限：WebUI 登录态，或公开聊天页的有效会话（query `session_id`）。
+  `data.plugin`；不存在 → **404** `plugin_not_found`。
 
 ### GET /api/plugins/online — 在线插件目录
 
@@ -433,6 +435,11 @@ warnings}`。
 `!!webui verify <code>` 绑定 → `PUT /chat/accounts/{name}/password` 签发
 `session_id`（或用已有密码 `POST /chat/sessions` 登录）。时间字段
 `timestamp` 为 epoch 秒。
+
+公开聊天页是匿名入口，会话除下列 `/chat/*` 接口外，还可读取两个只读接口用于
+页面展示：`GET /api/server/status?session_id=`（在线人数/版本）与
+`GET /api/plugins/{plugin_id}?session_id=`（页脚版本号）。其余需要登录的接口
+不接受聊天会话，管理类接口仍只认 WebUI 登录态。
 
 - `POST /api/chat/verifications`：生成验证码 → `data {code, expire_minutes}`。
   未启用公开聊天 → **403** `public_chat_disabled`。
