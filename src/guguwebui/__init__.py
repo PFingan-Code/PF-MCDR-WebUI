@@ -1,4 +1,3 @@
-import asyncio
 import os
 import platform
 import threading
@@ -15,16 +14,48 @@ from guguwebui.utils.dependency_checker import check_and_install_dependencies
 web_server_interface = None
 _mounted_to_fastapi_mcdr = False
 chat_logger = None  # 在 _do_startup 中赋值为 ChatLogger 实例
+_RUNTIME_ATTR = "_guguwebui_runtime"
 
 
-def _bootstrap(server: PluginServerInterface):
-    """后台线程：先异步完成依赖检查与安装，再继续插件启动流程，避免阻塞 MCDR 看门狗。"""
+def _get_runtime(server: PluginServerInterface) -> dict:
+    """Keep lifecycle state on MCDR's stable server object across plugin reloads."""
+    runtime = getattr(server, _RUNTIME_ATTR, None)
+    if not isinstance(runtime, dict):
+        runtime = {
+            "lock": threading.RLock(),
+            "generation": 0,
+            "bootstrap_thread": None,
+            "web_server": None,
+            "starting": False,
+        }
+        setattr(server, _RUNTIME_ATTR, runtime)
+    return runtime
+
+
+def _begin_generation(server: PluginServerInterface) -> int:
+    runtime = _get_runtime(server)
+    with runtime["lock"]:
+        runtime["generation"] += 1
+        return runtime["generation"]
+
+
+def _is_current_generation(server: PluginServerInterface, generation: int) -> bool:
+    runtime = _get_runtime(server)
+    with runtime["lock"]:
+        return runtime["generation"] == generation
+
+
+def _bootstrap(server: PluginServerInterface, generation: int):
+    """后台启动流程；插件重载后旧代次不得继续创建监听器。"""
     try:
         check_and_install_dependencies(server)
     except Exception as e:
         server.logger.error(f"依赖检查过程中发生错误: {e}")
         server.logger.warning("将尝试继续启动，但可能会遇到导入错误")
-    _do_startup(server)
+    if not _is_current_generation(server, generation):
+        server.logger.info("检测到插件已重载，取消旧的 WebUI 启动流程")
+        return
+    _do_startup(server, generation)
 
 
 def _log_plugin_format(server: PluginServerInterface):
@@ -194,23 +225,54 @@ def _start_standalone_server(
     app,
     ThreadedUvicornCls,
     uvicorn_module,
+    generation: int | None = None,
 ):
     """构建 uvicorn 配置（含 SSL）、启动独立 Web 服务并写全局 web_server_interface。"""
     global web_server_interface
-    config_params = {
-        'app': app,
-        'host': host,
-        'port': port,
-        'log_level': 'warning',
-    }
-    config_params, ssl_enabled = _apply_ssl_config(server, plugin_config, config_params)
-    config = uvicorn_module.Config(**config_params)
-    web_server_interface = ThreadedUvicornCls(server, config)
-    protocol = "https" if ssl_enabled else "http"
-    from .utils.server_util import format_host_for_url
-    host_display = format_host_for_url(host)
-    server.logger.info(f"网页地址: {protocol}://{host_display}:{port}")
-    web_server_interface.start()
+    runtime = _get_runtime(server)
+    with runtime["lock"]:
+        if generation is not None and runtime["generation"] != generation:
+            raise RuntimeError("插件已重载，拒绝启动旧代 Web 服务")
+        existing = runtime.get("web_server")
+        if existing is not None or runtime["starting"]:
+            server.logger.info("Web服务器已在运行或启动中，跳过重复启动")
+            return
+        runtime["starting"] = True
+        interface = None
+        try:
+            config_params = {
+                'app': app,
+                'host': host,
+                'port': port,
+                'log_level': 'warning',
+            }
+            config_params, ssl_enabled = _apply_ssl_config(
+                server, plugin_config, config_params
+            )
+            config = uvicorn_module.Config(**config_params)
+            interface = ThreadedUvicornCls(server, config)
+            if generation is not None and runtime["generation"] != generation:
+                raise RuntimeError("插件已重载，拒绝启动旧代 Web 服务")
+            runtime["web_server"] = interface
+            web_server_interface = interface
+            protocol = "https" if ssl_enabled else "http"
+            from .utils.server_util import format_host_for_url
+            host_display = format_host_for_url(host)
+            server.logger.info(f"网页地址: {protocol}://{host_display}:{port}")
+            interface.start()
+        except Exception:
+            if interface is not None:
+                try:
+                    interface.stop()
+                except Exception:
+                    pass
+            if runtime.get("web_server") is interface:
+                runtime["web_server"] = None
+            if web_server_interface is interface:
+                web_server_interface = None
+            runtime["starting"] = False
+            raise
+        runtime["starting"] = False
 
 
 def _log_fastapi_mcdr_url(server: PluginServerInterface):
@@ -241,8 +303,10 @@ def _init_chat_logger(server: PluginServerInterface):
         return None
 
 
-def _do_startup(server: PluginServerInterface):
+def _do_startup(server: PluginServerInterface, generation: int | None = None):
     """依赖就绪后执行完整启动流程（在后台线程中调用）。"""
+    if generation is not None and not _is_current_generation(server, generation):
+        return
     global web_server_interface, chat_logger
 
     import uvicorn as uvicorn_module
@@ -251,6 +315,7 @@ def _do_startup(server: PluginServerInterface):
     from guguwebui.utils.file_util import amount_static_files
     from guguwebui.utils.mc_util import get_plugins_info
     from guguwebui.utils.server_util import patch_asyncio
+    from guguwebui.constant import get_static_path
     from guguwebui.web_server import (DEFALUT_CONFIG, STATIC_PATH,
                                       ThreadedUvicorn, app, init_app)
 
@@ -276,10 +341,11 @@ def _do_startup(server: PluginServerInterface):
     host = plugin_config['host']
     port = plugin_config['port']
 
-    amount_static_files(server)
-    app.mount("/static", StaticFiles(directory=f"{STATIC_PATH}/static"), name="static")
-    app.mount("/assets", StaticFiles(directory=f"{STATIC_PATH}/static/assets"), name="assets")
-    app.mount("/custom", StaticFiles(directory=f"{STATIC_PATH}/custom"), name="custom")
+    static_root = get_static_path(server)
+    amount_static_files(server, static_root)
+    app.mount("/static", StaticFiles(directory=str(static_root / "static")), name="static")
+    app.mount("/assets", StaticFiles(directory=str(static_root / "static" / "assets")), name="assets")
+    app.mount("/custom", StaticFiles(directory=str(static_root / "custom")), name="custom")
 
     init_app(server)
     start_self_update_checker(server)
@@ -290,7 +356,7 @@ def _do_startup(server: PluginServerInterface):
     else:
         _start_standalone_server(
             server, plugin_config, host, port,
-            app, ThreadedUvicorn, uvicorn_module,
+            app, ThreadedUvicorn, uvicorn_module, generation,
         )
 
     get_plugins_info(app.state.server_interface)
@@ -326,6 +392,7 @@ def _handle_dependencies_and_reload(server: PluginServerInterface):
 
 def on_load(server: PluginServerInterface, _old):
     """注册命令后，异步启动其余 WebUI 逻辑，避免阻塞 MCDR 看门狗。"""
+    generation = _begin_generation(server)
     # 直接使用dependency_checker中的函数检查passlib是否已安装
     try:
         from guguwebui.utils.dependency_checker import is_package_installed
@@ -341,7 +408,11 @@ def on_load(server: PluginServerInterface, _old):
             register_command(server, host, port)
 
             server.logger.info("启动 WebUI 中（其余部分在后台线程异步完成）...")
-            threading.Thread(target=_bootstrap, args=(server,), daemon=False).start()
+            bootstrap_thread = threading.Thread(
+                target=_bootstrap, args=(server, generation), daemon=False
+            )
+            _get_runtime(server)["bootstrap_thread"] = bootstrap_thread
+            bootstrap_thread.start()
         else:
             # passlib未安装，启动异步依赖处理
             server.logger.warning("检测到passlib未安装，将在后台线程中自动安装依赖...")
@@ -421,70 +492,30 @@ def on_plugin_loaded(server: PluginServerInterface, plugin_id: str):
 
 
 def start_standalone_server(server: PluginServerInterface):
-    """启动独立服务器模式"""
+    """启动独立服务器模式，复用统一的生命周期保护。"""
     try:
-        import os
-
         import uvicorn
 
         from .utils.mc_util import get_plugins_info
         from .utils.server_util import ThreadedUvicorn
         from .web_server import DEFALUT_CONFIG, app, init_app
 
-        # 重新初始化应用程序
         init_app(server)
-
-        # 加载配置
-        plugin_config = server.load_config_simple("config.json", DEFALUT_CONFIG, echo_in_console=False)
-        host = plugin_config['host']
-        port = plugin_config['port']
-
-        # 从配置中读取SSL设置
-        ssl_enabled = plugin_config.get('ssl_enabled', False)
-
-        # 基本配置
-        config_params = {
-            'app': app,
-            'host': host,
-            'port': port,
-            'log_level': "warning"
-        }
-
-        # 如果启用了SSL，添加SSL配置
-        if ssl_enabled:
-            try:
-                ssl_keyfile = plugin_config.get('ssl_keyfile', '')
-                ssl_certfile = plugin_config.get('ssl_certfile', '')
-                ssl_keyfile_password = plugin_config.get('ssl_keyfile_password', '')
-
-                if ssl_keyfile and ssl_certfile and os.path.exists(ssl_certfile) and os.path.exists(ssl_keyfile):
-                    config_params['ssl_keyfile'] = ssl_keyfile
-                    config_params['ssl_certfile'] = ssl_certfile
-                    if ssl_keyfile_password:
-                        config_params['ssl_keyfile_password'] = ssl_keyfile_password
-                    server.logger.info("已启用HTTPS模式")
-                else:
-                    server.logger.warning("SSL文件不存在，将使用HTTP模式")
-                    ssl_enabled = False
-            except Exception as e:
-                server.logger.error(f"处理SSL配置时发生错误: {e}")
-                ssl_enabled = False
-
-        # 创建配置对象
-        config = uvicorn.Config(**config_params)
-        global web_server_interface
-        web_server_interface = ThreadedUvicorn(server, config)
-
-        # 显示URL（IPv6 地址在 URL 中需加方括号）
-        protocol = "https" if ssl_enabled else "http"
-        from .utils.server_util import format_host_for_url
-        host_display = format_host_for_url(host)
-        server.logger.info(f"独立服务器已启动: {protocol}://{host_display}:{port}")
-        web_server_interface.start()
-
-        # 获取插件信息
+        plugin_config = server.load_config_simple(
+            "config.json", DEFALUT_CONFIG, echo_in_console=False
+        )
+        generation = _get_runtime(server)["generation"]
+        _start_standalone_server(
+            server,
+            plugin_config,
+            plugin_config["host"],
+            int(plugin_config["port"]),
+            app,
+            ThreadedUvicorn,
+            uvicorn,
+            generation,
+        )
         get_plugins_info(app.state.server_interface)
-
     except Exception as e:
         server.logger.error(f"启动独立服务器失败: {e}")
         raise
@@ -578,7 +609,7 @@ def start_self_update_checker(server: PluginServerInterface):
 
 
 def on_unload(server: PluginServerInterface):
-    global _mounted_to_fastapi_mcdr
+    global _mounted_to_fastapi_mcdr, web_server_interface
     server.logger.info("正在卸载 WebUI...")
     
     # 卸载 GUGUBot 系统模块
@@ -625,9 +656,22 @@ def on_unload(server: PluginServerInterface):
     except Exception as e:
         server.logger.debug(f"停止服务器状态监控时出错: {e}")
 
+    # 使旧启动线程在任何后续阶段都失效，并等待它离开启动流程。
+    runtime = _get_runtime(server)
+    with runtime["lock"]:
+        runtime["generation"] += 1
+        bootstrap_thread = runtime.get("bootstrap_thread")
+        runtime["bootstrap_thread"] = None
+        current_web_server = runtime.get("web_server") or web_server_interface
+
+    if bootstrap_thread is not None and bootstrap_thread is not threading.current_thread():
+        bootstrap_thread.join(timeout=10)
+        if bootstrap_thread.is_alive():
+            server.logger.error("旧 WebUI 启动线程未退出，拒绝继续启动新的 WebUI 实例")
+
     # 停止Web服务器（仅在独立模式下需要）
     try:
-        if 'web_server_interface' in globals() and web_server_interface:
+        if current_web_server:
             # 如果使用了SSL，添加特殊处理
             try:
                 from .web_server import DEFALUT_CONFIG
@@ -656,37 +700,20 @@ def on_unload(server: PluginServerInterface):
             except Exception as e:
                 server.logger.warning(f"检查SSL配置时出错: {e}")
 
-            # 正常停止Web服务器
-            web_server_interface.stop()
-            server.logger.debug("Web服务器已停止")
+            # 正常停止Web服务器；未确认线程退出时不允许新实例抢占端口
+            if current_web_server.stop():
+                with runtime["lock"]:
+                    if runtime.get("web_server") is current_web_server:
+                        runtime["web_server"] = None
+                    if web_server_interface is current_web_server:
+                        web_server_interface = None
+                server.logger.debug("Web服务器已停止")
+            else:
+                server.logger.error("Web服务器未完全停止，保留运行句柄以阻止端口冲突")
     except Exception as e:
         server.logger.warning(f"停止Web服务器时出错: {e}")
 
-    # 清理事件循环和asyncio相关资源
-    try:
-        # 获取当前事件循环
-        try:
-            loop = asyncio.get_event_loop()
-            if not loop.is_closed():
-                server.logger.debug("关闭asyncio事件循环")
-                # 停止所有任务
-                try:
-                    for task in asyncio.all_tasks(loop):
-                        task.cancel()
-                except Exception:
-                    pass
-
-                # 运行一次loop确保任务被取消
-                if not loop.is_closed():
-                    loop.run_until_complete(asyncio.sleep(0))
-
-                # 关闭事件循环
-                if not loop.is_closed():
-                    loop.close()
-        except Exception:
-            pass
-    except Exception as e:
-        server.logger.warning(f"清理asyncio资源时出错: {e}")
+    # Uvicorn owns its event loop; do not close MCDR's current loop here.
 
     # 强制清理环境
     try:

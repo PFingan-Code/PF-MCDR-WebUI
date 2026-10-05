@@ -114,9 +114,10 @@ def __copyFolder(server, folder_path, target_folder):
 
 def amount_static_files(server, static_path=None):
     if static_path is None:
-        from guguwebui.constant import STATIC_PATH
-        static_path = STATIC_PATH
-    os.makedirs(static_path, exist_ok=True)
+        from guguwebui.constant import get_static_path
+        static_path = get_static_path(server)
+    static_path = Path(static_path)
+    static_path.mkdir(parents=True, exist_ok=True)
     static_target = Path(static_path) / 'static'
     static_target.mkdir(parents=True, exist_ok=True)
 
@@ -134,16 +135,30 @@ def amount_static_files(server, static_path=None):
 
     custom_target = Path(static_path) / 'custom'
     custom_target.mkdir(parents=True, exist_ok=True)
-    try:
-        __copyFile(server, 'guguwebui/custom/overall.css', custom_target / 'overall.css')
-    except Exception as e:
-        server.logger.warning(f"复制 guguwebui/custom/overall.css 失败: {e}")
-    try:
-        __copyFile(server, 'guguwebui/custom/overall.js', custom_target / 'overall.js')
-    except Exception as e:
-        server.logger.warning(f"复制 guguwebui/custom/overall.js 失败: {e}")
+    from guguwebui.constant import CUSTOM_FILE_DEFAULTS
+    custom_sources = {
+        "overall.css": ("css", "guguwebui/custom/overall.css"),
+        "overall.js": ("js", "guguwebui/custom/overall.js"),
+    }
+    for filename, (file_type, bundled_path) in custom_sources.items():
+        target = custom_target / filename
+        try:
+            __copyFile(server, bundled_path, target)
+        except Exception as e:
+            if target.exists():
+                server.logger.warning(f"复制 {bundled_path} 失败，保留现有文件: {e}")
+            else:
+                try:
+                    target.write_text(CUSTOM_FILE_DEFAULTS[file_type], encoding="utf-8")
+                    server.logger.warning(
+                        f"复制 {bundled_path} 失败，已创建默认自定义文件: {target} ({e})"
+                    )
+                except Exception as fallback_error:
+                    server.logger.error(
+                        f"复制 {bundled_path} 且创建默认文件均失败: {fallback_error}"
+                    )
 
-    server.logger.debug("成功复制 static 资源（index.html + assets）")
+    server.logger.debug("成功复制 static 资源（index.html + assets + custom）")
 
 
 def extract_metadata(plugin_path):

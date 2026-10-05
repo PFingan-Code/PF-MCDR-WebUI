@@ -89,12 +89,14 @@ __all__ = [
 
 # URL路径处理函数已移至 utils.py
 
-# SPA 入口文件路径
-static_index_path = Path(STATIC_PATH) / "static" / "index.html"
+def _get_static_index_path() -> Path:
+    server = getattr(app.state, "server_interface", None)
+    return get_static_path(server) / "static" / "index.html"
 
 
 def serve_spa_index(request: Request) -> HTMLResponse:
     """返回 SPA 的 index.html 文件，并注入配置"""
+    static_index_path = _get_static_index_path()
     if not static_index_path.exists():
         return HTMLResponse(
             content="<h1>前端文件未找到</h1><p>请确保已构建前端项目（运行 npm run build）</p>",

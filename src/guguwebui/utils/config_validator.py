@@ -59,19 +59,17 @@ class ConfigValidator:
             self.validation_errors.append(f"无效的IP地址: {host}")
             return False
 
-        # 验证端口
+        # 验证端口并统一为整数。端口是否可用由实际 Uvicorn bind 决定，
+        # 避免“预检成功后被抢占”的 TOCTOU 竞态。
         if not self._is_valid_port(port):
             self.validation_errors.append(f"无效的端口号: {port}")
             return False
+        port = int(port)
+        validated_config["port"] = port
 
         # 检查是否与Minecraft服务器端口冲突
         if not self._check_minecraft_port_conflict(port):
             self.validation_errors.append(f"端口 {port} 与Minecraft服务器端口冲突，无法启动Web服务")
-            return False
-
-        # 验证端口是否可用
-        if not self._is_port_available(host, port):
-            self.validation_errors.append(f"端口 {port} 在 {host} 上不可用")
             return False
 
         return True

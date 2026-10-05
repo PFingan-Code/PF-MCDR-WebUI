@@ -13,6 +13,33 @@ DATA_DB_PATH = Path("./config") / "guguwebui" / "guguwebui.sqlite3"
 USER_DB_PATH = Path(STATIC_PATH) / "db.json"
 AUDIT_LOG_PATH = Path(STATIC_PATH) / "audit_log.bin"
 PLAYER_STATS_PATH = Path(STATIC_PATH) / "player_stats.json"
+
+# These are also used when an older/incomplete .mcdr package does not contain
+# the optional custom assets. They are intentionally minimal and user-editable.
+CUSTOM_FILE_DEFAULTS = {
+    "css": "/* 在此处添加全局样式 */\n* {\n    padding: 0;\n    margin: 0;\n}\n",
+    "js": "// 在此处添加全局脚本\n",
+}
+
+
+def get_static_path(server=None) -> Path:
+    """Return the plugin data directory without depending on process cwd."""
+    if server is not None:
+        try:
+            data_folder = server.get_data_folder()
+            if data_folder:
+                return Path(data_folder) / "guguwebui_static"
+        except Exception:
+            pass
+    return Path(STATIC_PATH)
+
+
+def get_custom_file_path(server, file_type: str) -> Path:
+    if file_type not in CUSTOM_FILE_DEFAULTS:
+        raise ValueError(f"不支持的自定义文件类型: {file_type}")
+    return get_static_path(server) / "custom" / (
+        "overall.css" if file_type == "css" else "overall.js"
+    )
 # 玩家会话日志保留天数（在线情况统计的历史窗口）
 PLAYER_STATS_SESSION_RETENTION_DAYS = 90
 PATH_DB_PATH = Path("./config") / "guguwebui" / "config_path.json"

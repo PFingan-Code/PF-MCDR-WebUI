@@ -36,83 +36,63 @@ from guguwebui.constant import *
 
 # Github: https://github.com/zauberzeug/nicegui/issues/1956
 class ThreadedUvicorn:
+    """在独立线程运行 Uvicorn，并提供可验证的启停生命周期。"""
+
     def __init__(self, server: ServerInterface, config: uvicorn.Config):
         self.mcdr_server = server
         self.server = uvicorn.Server(config)
         self.thread = threading.Thread(daemon=True, target=self.server.run)
-        self._retry_count = 0
-        self._max_retries = 3
+        self._start_timeout = 10.0
+        self._stop_timeout = 10.0
 
     def start(self):
+        if self.thread.is_alive():
+            if self.server.started:
+                return
+            raise RuntimeError("Web服务器正在启动或启动失败")
+
         try:
             self.thread.start()
-            try:
-                asyncio.run(self.wait_for_started())
-            except ConnectionResetError as e:
-                self.mcdr_server.logger.warning(f"启动过程中连接重置: {e}")
-                if self._retry_count < self._max_retries:
-                    self._retry_count += 1
-                    self.stop()
-                    self.start()
-                else:
-                    self.mcdr_server.logger.error(
-                        f"重试次数已达上限({self._max_retries}次)，无法恢复"
-                    )
-                    raise
+            deadline = time.monotonic() + self._start_timeout
+            while not self.server.started:
+                if not self.thread.is_alive() or self.server.should_exit:
+                    raise RuntimeError("Web服务器未能绑定监听地址")
+                if time.monotonic() >= deadline:
+                    self.server.should_exit = True
+                    raise TimeoutError("等待Web服务器启动超时")
+                time.sleep(0.05)
         except Exception as e:
             self.mcdr_server.logger.error(f"启动服务器时发生异常: {e}")
+            self.stop()
             raise
 
     async def wait_for_started(self):
-        try:
-            while not self.server.started:
-                await asyncio.sleep(0.1)
-        except ConnectionResetError:
-            self.mcdr_server.logger.warning("等待服务器启动时连接被重置")
-            raise
+        """兼容旧调用方的异步等待接口，启动失败时不会无限等待。"""
+        deadline = time.monotonic() + self._start_timeout
+        while not self.server.started:
+            if not self.thread.is_alive() or self.server.should_exit:
+                raise RuntimeError("Web服务器未能绑定监听地址")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("等待Web服务器启动超时")
+            await asyncio.sleep(0.1)
 
-    def stop(self):
-        try:
-            self.mcdr_server.logger.debug("正在停止Web服务器...")
-            if self.thread.is_alive():
-                # 设置退出标志
-                self.server.should_exit = True
-                self.mcdr_server.logger.debug("已设置服务器退出标志")
+    def stop(self) -> bool:
+        """请求停止并等待真实 Uvicorn 线程退出，返回是否已确认退出。"""
+        self.mcdr_server.logger.debug("正在停止Web服务器...")
+        if not self.thread.is_alive():
+            return True
 
-                try:
-                    # 尝试关闭SSL连接（如果有）
-                    self._close_ssl_connections()
-
-                    # 使用超时机制等待线程终止
-                    max_wait_time = 5  # 最多等待5秒
-                    start_time = time.time()
-                    self.mcdr_server.logger.debug("等待服务器线程退出...")
-
-                    while self.thread.is_alive():
-                        if time.time() - start_time > max_wait_time:
-                            self.mcdr_server.logger.warning(
-                                "服务器线程超时未能正常退出，准备强制终止"
-                            )
-                            break
-                        time.sleep(0.1)  # 小间隔检查，减少CPU使用率
-
-                    # 如果线程还活着，尝试更强硬的方式处理
-                    if self.thread.is_alive():
-                        self.mcdr_server.logger.warning("尝试强制终止服务器线程")
-                        self._force_thread_termination()
-                except ConnectionResetError:
-                    self.mcdr_server.logger.warning(
-                        "关闭服务器时连接被重置，强制终止线程"
-                    )
-                    self._force_thread_termination()
-                except Exception as e:
-                    self.mcdr_server.logger.error(f"等待线程终止时发生异常: {e}")
-                    self._force_thread_termination()
-        except Exception as e:
-            self.mcdr_server.logger.error(f"停止服务器时发生异常: {e}")
-        finally:
-            # 确保即使出现异常也不会阻塞主进程
-            self.mcdr_server.logger.debug("Web服务器停止流程完成")
+        self.server.should_exit = True
+        self.mcdr_server.logger.debug("已设置服务器退出标志，等待线程退出...")
+        self.thread.join(timeout=self._stop_timeout)
+        stopped = not self.thread.is_alive()
+        if not stopped:
+            self.mcdr_server.logger.error(
+                "Web服务器线程在超时时间内未退出，拒绝启动新的监听实例"
+            )
+        else:
+            self.mcdr_server.logger.debug("Web服务器线程已退出，监听端口已释放")
+        return stopped
 
     def _close_ssl_connections(self):
         """尝试关闭所有SSL连接"""

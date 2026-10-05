@@ -74,7 +74,6 @@ jobs:
         # 排除旧版前端资源与代码，仅打包构建产物与后端
         zip -r ../guguweb_beta.mcdr . \
           -x "guguwebui/css*" \
-          -x "guguwebui/custom*" \
           -x "guguwebui/frontend*" \
           -x "guguwebui/js*" \
           -x "guguwebui/lang*" \
@@ -82,6 +81,21 @@ jobs:
           -x "guguwebui/templates*"
         cd ..
         echo "Packaged src contents into guguweb_beta.mcdr (old frontend dirs excluded)"
+        python - <<'PY'
+        import zipfile
+
+        required = {
+            "guguwebui/custom/overall.css",
+            "guguwebui/custom/overall.js",
+        }
+        with zipfile.ZipFile("guguweb_beta.mcdr") as archive:
+            missing = required - set(archive.namelist())
+        if missing:
+            raise SystemExit(
+                f"Missing required custom assets in package: {sorted(missing)}"
+            )
+        print("Required custom assets verified in package")
+        PY
         mkdir -p build
         cp guguweb_beta.mcdr build/
         echo "Copied guguweb_beta.mcdr to build directory"
