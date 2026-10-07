@@ -37,6 +37,17 @@ interface OfflineMember {
   uuid?: string
 }
 
+// 公开聊天页是匿名入口：读取聊天消息需带上会话 ID 作为凭证
+const withChatSession = (params: Record<string, unknown> = {}) => {
+  let sessionId = ''
+  try {
+    sessionId = localStorage.getItem('chat_session_id') || ''
+  } catch {
+    sessionId = ''
+  }
+  return sessionId ? { ...params, session_id: sessionId } : params
+}
+
 const PlayerChat: React.FC = () => {
   const { t } = useTranslation()
   const [isLoggedIn, setIsLoggedIn] = useState(false)
@@ -155,7 +166,7 @@ const PlayerChat: React.FC = () => {
   const fetchInitialMessages = useCallback(async () => {
     setIsLoadingMessages(true)
     try {
-      const resp = await api.get('/chat/messages', { params: { limit: 50, offset: 0 } })
+      const resp = await api.get('/chat/messages', { params: withChatSession({ limit: 50, offset: 0 }) })
       const d = unwrapData<{ items?: ChatMessage[] }>(resp)
       const msgs = d?.items || []
       setChatMessages(msgs)
@@ -176,7 +187,7 @@ const PlayerChat: React.FC = () => {
 
     try {
       const resp = await api.get('/chat/messages/incremental', {
-        params: { after_id: currentMaxId, player_id: currentPlayer }
+        params: withChatSession({ after_id: currentMaxId, player_id: currentPlayer })
       })
       const d = unwrapData<{ messages?: ChatMessage[]; online?: OnlineStatus }>(resp)
       if (d?.messages && d.messages.length > 0) {
@@ -269,7 +280,7 @@ const PlayerChat: React.FC = () => {
     if (isLoadingMessages) return
     setIsLoadingMessages(true)
     try {
-      const resp = await api.get('/chat/messages', { params: { limit, before_id: beforeId } })
+      const resp = await api.get('/chat/messages', { params: withChatSession({ limit, before_id: beforeId }) })
       const d = unwrapData<{ items?: ChatMessage[] }>(resp)
       const msgs = d?.items || []
       setChatMessages(prev => [...prev, ...msgs])

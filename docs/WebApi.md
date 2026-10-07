@@ -86,17 +86,24 @@
 
 ### 5. 认证方式
 
-1. **浏览器会话**：Cookie `token` + Session `logged_in` / `username`
-   （Web 管理端与多数业务页面）。
+1. **浏览器会话**：Cookie `token`（唯一凭证，用户名取自服务端 token 记录，
+   不读取 session 中的 `username`）。token 有效期在接口层校验（默认 1 天，
+   `remember` 为 365 天），过期即 401 并从库中清除。
 2. **子服模式**（`panel_role: slave`）：请求头 `X-Panel-Token`，值为
    `config.json` 中 `panel_master.allowed_tokens` 已启用项的 `token`；可选配
    `allowed_master_ips` 限制来源 IP。此时用户名为 `__panel__`，管理员校验放行
    （权限由主服侧判定）。
+3. **脚本/会话签名**：session cookie 由随机生成并持久化到 SQLite 的密钥签名
+   （`app_state` 中 `secrets/session_secret_key`），不再使用固定密钥。
 
 权限分三级：`登录`（`get_current_user`）、`管理员`（`get_current_admin`）、
 `超级管理员`（`get_super_admin`，仅模组永久清理与上传上限修改等少数动作）。
 未登录访问需登录接口 → **401**；已登录但权限不足 → **403**（非 API 页面
 401/403 会重定向到登录页）。
+
+登录类接口按失败次数限流（滑动窗口 5 分钟）：同一 IP + 账号 5 次失败，或同一
+IP 合计 20 次失败后，返回 **429** `too_many_attempts`（`data.retry_after` 秒数，
+表单登录响应另带 `Retry-After` 头）。成功登录清除该账号的失败计数。
 
 ### 6. 多服面板代理（主服）
 
@@ -136,6 +143,9 @@ SPA 由前端路由处理。
 - 参数（`application/x-www-form-urlencoded`）：`account`、`password`，
   可选 `temp_code`（临时登录码）、`remember`。
 - 属“保持现状”项（表单 + Cookie 会话为常规做法，不纳入 REST 外壳）。
+- 当 `disable_other_admin` 为真时，**账号密码与临时码登录都只允许
+  `super_admin_account`**（其他账号或 `tempuser` → **403**）。
+- 失败次数超限 → **429** `too_many_attempts`（见“认证方式”）。
 - 登录页为 `GET /login`；QQ 扫码登录：`POST /api/login/qq_qr/start`
   （返回 `code` + `qrUrl`）→ 轮询 `GET /api/login/qq_qr/status?code=...`。
 
@@ -180,8 +190,9 @@ SPA 由前端路由处理。
 - 语义：`!` 开头为 MCDR 命令（捕获源权限 4 直接执行）；其余为游戏命令 ——
   RCON 已连接时优先 RCON 并回传直接反馈，否则「直接执行 + 输出捕获」，
   **均不需要 RCON**。`feedback` 可能为空（无回显）。
-- 保护：禁止 `!!MCDR plugin reload/unload guguwebui` → **403**
-  `forbidden_command`；执行失败 → **400** `command_failed`。
+- 保护：禁止 `!!MCDR plugin reload/unload/disable guguwebui`（含 `!!mcdr` 与
+  `plg` 别名、大小写与多余空格变体）与服务器停机命令 `stop`（含 `/stop`）
+  → **403** `forbidden_command`；执行失败 → **400** `command_failed`。
 - 旧 `/api/send_command` 已下线。
 
 ### GET /api/server/command-suggestions — 命令补全
@@ -229,14 +240,16 @@ SPA 由前端路由处理。
 
 ### GET /api/plugins/{plugin_id}/config-files — 插件配置文件列表
 
-- 权限：登录。`data.files`：`[{path, name, has_web}]`。
+- 权限：管理员（列表内容可指向敏感配置文件）。`data.files`：
+  `[{path, name, has_web}]`。
 - 旧 `/api/list_config_files` 已下线。
 
 ### GET /api/config-files — 加载配置文件
 
-- 权限：登录。query：`path`（必填；受 SafePath 约束，含 `./`、`..` 与嵌套
-  斜杠，故放查询参数而非路径段）、`translation`、`type`（auto/json/yml/
-  yaml/properties/html）。
+- 权限：管理员（可读目录包含 WebUI 自身 `config.json`，其中有 AI Key、
+  面板 token、SSL 密钥口令等敏感字段）。query：`path`（必填；受 SafePath
+  约束，含 `./`、`..` 与嵌套斜杠，故放查询参数而非路径段）、`translation`、
+  `type`（auto/json/yml/yaml/properties/html）。
 - `data = {path, type, content, config_data?}`；缺文件 → **404**
   `config_file_not_found`（不再返回 `{}`）；越权路径 → **403`
   `path_not_allowed`。
@@ -448,17 +461,22 @@ warnings}`。
   **400** `verification_expired`。
 - `PUT /api/chat/accounts/{name}/password`：body `{code, password}`；路径
   `name` 必须与码绑定玩家一致（否则 **400** `verification_mismatch`）；
-  成功后**直接签发会话**，`data` 含 `session_id/player_id/uuid`。
+  成功后**直接签发会话**，`data` 含 `session_id/player_id/uuid`。验证码猜测
+  类失败计入 IP 级限流（**429** `too_many_attempts`）。
 - `POST /api/chat/sessions`：body `{player_id, password}` → `data` 含
   `session_id`。账号不存在 **404** `user_not_found`；密码错 **401**
-  `invalid_password`；IP 超限 **429** `ip_limit_exceeded`。
+  `invalid_password`；IP 超限 **429** `ip_limit_exceeded`；失败次数超限
+  **429** `too_many_attempts`（`data.retry_after`）。
 - `GET /api/chat/session/{session_id}`：`data {valid, player_id?, uuid?}`；
   不存在 **404** `session_not_found`、过期 **401** `session_expired`。
 - `DELETE /api/chat/session/{session_id}`：登出（幂等）。
-- `GET /api/chat/messages`：分页外壳（query `limit`(1–200)/`offset`/
-  `after_id`/`before_id`）→ `data.items`（新→旧）。
-- `GET /api/chat/messages/incremental?after_id=&player_id=`：轮询增量 →
-  `data {messages, last_message_id, online: {web, game, bot}}`。
+- `GET /api/chat/messages`：权限为 WebUI 登录态，或启用公开聊天时携带
+  `session_id` 的聊天会话（否则 **403** `public_chat_disabled` /
+  **401**）。分页外壳（query `limit`(1–200)/`offset`/`after_id`/`before_id`）
+  → `data.items`（新→旧）。
+- `GET /api/chat/messages/incremental?after_id=&player_id=`：同上权限，
+  轮询增量 → `data {messages, last_message_id, online: {web, game, bot}}`；
+  聊天会话访客的心跳固定记为会话绑定的玩家，不能替他人上报在线。
 - `DELETE /api/chat/messages`（管理员）：清空。
 - `POST /api/chat/messages`：body `{message, player_id, session_id?}` 广播到
   游戏。需 `public_chat_to_game_enabled`（**403** `chat_to_game_disabled`）；

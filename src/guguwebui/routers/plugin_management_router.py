@@ -307,9 +307,9 @@ async def api_reload_plugin(
 async def api_list_config_files(
     request: Request,
     plugin_id: str,
-    _user: dict = Depends(get_current_user),
+    _admin: dict = Depends(get_current_admin),
 ):
-    """列出插件的配置文件"""
+    """列出插件的配置文件（仅管理员，与 GET /config-files 一致）"""
     files_list = request.app.state.config_service.list_config_files(plugin_id)
     return success({"files": files_list})
 

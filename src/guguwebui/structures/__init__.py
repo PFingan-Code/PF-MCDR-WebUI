@@ -15,20 +15,20 @@ class BusinessException(Exception):
 
 class AuthenticationException(BusinessException):
     """认证异常"""
-    def __init__(self, message: str = "未登录或会话已过期", data: Any = None):
-        super().__init__(message, status_code=401, data=data)
+    def __init__(self, message: str = "未登录或会话已过期", data: Any = None, code: str = "unauthorized"):
+        super().__init__(message, status_code=401, data=data, code=code)
 
 
 class ForbiddenException(BusinessException):
     """权限异常"""
-    def __init__(self, message: str = "权限不足", data: Any = None):
-        super().__init__(message, status_code=403, data=data)
+    def __init__(self, message: str = "权限不足", data: Any = None, code: str = "forbidden"):
+        super().__init__(message, status_code=403, data=data, code=code)
 
 
 class NotFoundException(BusinessException):
     """资源未找到异常"""
-    def __init__(self, message: str = "资源未找到", data: Any = None):
-        super().__init__(message, status_code=404, data=data)
+    def __init__(self, message: str = "资源未找到", data: Any = None, code: str = "not_found"):
+        super().__init__(message, status_code=404, data=data, code=code)
 
 
 class LoginData(BaseModel):

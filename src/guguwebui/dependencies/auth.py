@@ -1,4 +1,3 @@
-import datetime
 import ipaddress
 from typing import Optional
 
@@ -6,13 +5,19 @@ from fastapi import Depends, HTTPException, Query, Request, status
 
 from guguwebui.constant import user_db
 from guguwebui.structures import ForbiddenException
+from guguwebui.utils.auth_token import is_expired, resolve_web_token
+
 
 async def get_optional_user(request: Request) -> Optional[dict]:
-    """解析 WebUI 登录态（cookie 会话或子服 Panel Token）；未登录返回 None。"""
-    # 1) 常规 cookie 登录（保持现有逻辑）
-    token = request.cookies.get("token")
-    if token and token in user_db.get("token", {}) and request.session.get("logged_in"):
-        return {"username": request.session.get("username"), "token": token}
+    """解析 WebUI 登录态（token cookie 或子服 Panel Token）；未登录返回 None。
+
+    用户名只取自服务端 token 记录，不读取 session 中的 username；
+    过期 token 视为未登录并被清除。
+    """
+    # 1) 常规 cookie 登录：token 是唯一凭证
+    user = resolve_web_token(request.cookies.get("token"))
+    if user is not None:
+        return user
 
     # 2) 子服模式：允许主服通过 X-Panel-Token 访问（不依赖 session/cookie）
     config_service = getattr(request.app.state, "config_service", None)
@@ -46,9 +51,8 @@ async def get_current_user(request: Request) -> dict:
     if user is not None:
         return user
 
-    # token 不存在或 session 无效：清理 session（避免前端误以为已登录）
-    token = request.cookies.get("token")
-    if token and token not in user_db.get("token", {}):
+    # token 不存在、已过期或 session 无效：清理 session（避免前端误以为已登录）
+    if request.cookies.get("token"):
         request.session.clear()
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -156,13 +160,7 @@ def resolve_chat_session(session_id: str) -> Optional[dict]:
     session = sessions.get(session_id)
     if not isinstance(session, dict):
         return None
-    try:
-        expire_time = datetime.datetime.fromisoformat(
-            str(session.get("expire_time", "")).replace("Z", "+00:00")
-        )
-    except ValueError:
-        return None
-    if datetime.datetime.now(datetime.timezone.utc) > expire_time:
+    if is_expired(session.get("expire_time")):
         return None
     return session
 
@@ -193,3 +191,36 @@ async def get_current_user_or_chat_session(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="User not logged in",
     )
+
+
+async def get_chat_reader(
+    request: Request,
+    session_id: Optional[str] = Query(
+        None, description="公开聊天页会话 ID（未登录 WebUI 时必填）"
+    ),
+    current_user: Optional[dict] = Depends(get_optional_user),
+) -> dict:
+    """聊天消息读取权限。
+
+    - WebUI 登录用户（含子服 Panel Token）：始终可读（管理端聊天页不受公开开关影响）；
+    - 公开聊天页访客：必须启用 public_chat_enabled，且持有有效聊天会话。
+    """
+    if current_user is not None:
+        return current_user
+
+    config_service = getattr(request.app.state, "config_service", None)
+    config = config_service.get_config() if config_service is not None else {}
+    if not config.get("public_chat_enabled", False):
+        raise ForbiddenException("公开聊天页未启用", code="public_chat_disabled")
+
+    session = resolve_chat_session(session_id or "")
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Chat session required",
+        )
+    return {
+        "username": session.get("player_id"),
+        "auth_via": "chat_session",
+        "chat_session_id": session_id,
+    }

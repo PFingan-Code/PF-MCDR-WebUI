@@ -7,7 +7,7 @@ from guguwebui.utils.storage import SQLiteTable
 from guguwebui.utils.storage_migration import ensure_storage_layout
 
 ALGORITHM = "HS256"
-SECRET_KEY = "guguwebui"
+# SECRET_KEY 在文件末尾生成：首次启动随机生成并持久化到 SQLite（见 _load_session_secret）
 STATIC_PATH = "./config/guguwebui/guguwebui_static"
 DATA_DB_PATH = Path("./config") / "guguwebui" / "guguwebui.sqlite3"
 USER_DB_PATH = Path(STATIC_PATH) / "db.json"
@@ -162,3 +162,25 @@ DEFALUT_CONFIG = {
 
 ensure_storage_layout()
 user_db = SQLiteTable("user_db", default_content=DEFALUT_DB)
+
+
+def _load_session_secret() -> str:
+    """读取会话签名密钥；不存在（或为旧版固定值）时随机生成并持久化。
+
+    密钥只用于签名 Starlette session cookie。轮换后旧 session cookie 失效，
+    但鉴权以 token cookie 为准，已登录用户不受影响。
+    """
+    import secrets as _secrets
+
+    from guguwebui.utils.storage import get_state as _get_state
+    from guguwebui.utils.storage import set_state as _set_state
+
+    value = _get_state("secrets", "session_secret_key", None)
+    if isinstance(value, str) and len(value) >= 32 and value != "guguwebui":
+        return value
+    value = _secrets.token_urlsafe(48)
+    _set_state("secrets", "session_secret_key", value)
+    return value
+
+
+SECRET_KEY = _load_session_secret()

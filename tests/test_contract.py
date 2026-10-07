@@ -125,6 +125,7 @@ def test_json_routes_declare_response_model():
 def test_error_body_envelope_shape_on_real_app():
     """错误体示例（统一错误体 2.3）：404 / 401 / 422 均为 {status, message, code}。"""
     from guguwebui.web_server import app as real_app
+    from guguwebui.dependencies.auth import get_chat_reader
 
     client = TestClient(real_app)
 
@@ -142,8 +143,19 @@ def test_error_body_envelope_shape_on_real_app():
     assert body["status"] == "error"
     assert body["code"] == "http_401"
 
-    # 参数校验失败 → 422 统一错误体（不再输出裸 detail）
+    # 聊天读取接口已要求凭证：依赖先于参数校验执行，未启用公开聊天时先返回 403 外壳
     resp = client.get("/api/chat/messages", params={"limit": 99999})
+    assert resp.status_code == 403
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["code"] == "public_chat_disabled"
+
+    # 携带凭证后才是参数校验错误 → 422 统一错误体
+    real_app.dependency_overrides[get_chat_reader] = lambda: {"username": "admin", "token": "t"}
+    try:
+        resp = client.get("/api/chat/messages", params={"limit": 99999})
+    finally:
+        real_app.dependency_overrides.pop(get_chat_reader, None)
     assert resp.status_code == 422
     body = resp.json()
     assert body["status"] == "error"

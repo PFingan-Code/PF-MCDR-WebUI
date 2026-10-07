@@ -23,20 +23,41 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from guguwebui.dependencies.auth import get_current_admin, get_current_user
+from guguwebui.dependencies.auth import (get_chat_reader, get_current_admin,
+                                         get_current_user)
 from guguwebui.services.chat_service import ChatService
 from guguwebui.structures import (
+    BusinessException,
     ChatLoginRequest,
     ChatMessageCreateRequest,
     ChatSetPasswordRequest,
 )
 from guguwebui.structures.envelope import ApiSuccessEnvelope, PageEnvelope, success
+from guguwebui.utils.rate_limit import (login_retry_after, record_login_failure,
+                                        record_login_success)
 
 router = APIRouter(tags=["chat"])
+
+_CHAT_SCOPE = "chat"
 
 
 def _get_service(request: Request) -> ChatService:
     return request.app.state.chat_service
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _ensure_not_limited(client_ip: str, account: Optional[str] = None) -> None:
+    wait = login_retry_after(_CHAT_SCOPE, client_ip, account)
+    if wait > 0:
+        raise BusinessException(
+            f"尝试过于频繁，请 {wait} 秒后再试",
+            status_code=429,
+            code="too_many_attempts",
+            data={"retry_after": wait},
+        )
 
 
 @router.post("/chat/verifications", response_model=ApiSuccessEnvelope)
@@ -60,19 +81,34 @@ async def chat_set_password(
     body: ChatSetPasswordRequest,
 ):
     """设置聊天页用户密码（name 必须与验证码绑定的玩家一致；成功后直接签发会话）"""
-    result = await _get_service(request).set_user_password(
-        body.code, body.password, player_id=name
-    )
+    client_ip = _client_ip(request)
+    _ensure_not_limited(client_ip)
+    try:
+        result = await _get_service(request).set_user_password(
+            body.code, body.password, player_id=name
+        )
+    except BusinessException as e:
+        # 猜测验证码类失败计入 IP 级限制
+        if e.code in ("verification_not_found", "verification_mismatch"):
+            record_login_failure(_CHAT_SCOPE, client_ip)
+        raise
     return JSONResponse(success(result, message=result.get("message")))
 
 
 @router.post("/chat/sessions", response_model=ApiSuccessEnvelope)
 async def chat_login(request: Request, body: ChatLoginRequest):
-    """聊天页用户登录（创建会话）"""
-    client_ip = request.client.host if request.client else "unknown"
-    result = await _get_service(request).login(
-        body.player_id, body.password, client_ip
-    )
+    """聊天页用户登录（创建会话；失败次数过多 → 429 too_many_attempts）"""
+    client_ip = _client_ip(request)
+    _ensure_not_limited(client_ip, body.player_id)
+    try:
+        result = await _get_service(request).login(
+            body.player_id, body.password, client_ip
+        )
+    except BusinessException as e:
+        if e.code in ("user_not_found", "invalid_password"):
+            record_login_failure(_CHAT_SCOPE, client_ip, body.player_id)
+        raise
+    record_login_success(_CHAT_SCOPE, client_ip, body.player_id)
     return JSONResponse(success(result, message=result.get("message")))
 
 
@@ -97,8 +133,12 @@ async def get_chat_messages(
     offset: int = Query(0, ge=0),
     after_id: Optional[int] = Query(None, ge=0),
     before_id: Optional[int] = Query(None, ge=0),
+    _reader: dict = Depends(get_chat_reader),
 ):
-    """获取聊天消息（新→旧；after_id/before_id 为游标，与 offset 二选一）"""
+    """获取聊天消息（新→旧；after_id/before_id 为游标，与 offset 二选一）
+
+    权限：WebUI 登录态；或公开聊天页启用时的有效聊天会话（query session_id）。
+    """
     result = await _get_service(request).get_messages(
         limit=limit,
         offset=offset,
@@ -113,8 +153,14 @@ async def get_new_chat_messages(
     request: Request,
     after_id: int = Query(0, ge=0),
     player_id: Optional[str] = None,
+    reader: dict = Depends(get_chat_reader),
 ):
-    """获取新消息与在线状态（轮询接口，基于最后消息 ID；player_id 作心跳）"""
+    """获取新消息与在线状态（轮询接口，基于最后消息 ID；player_id 作心跳）
+
+    聊天会话访客的心跳固定记为会话绑定的玩家，不能替他人上报在线。
+    """
+    if reader.get("auth_via") == "chat_session":
+        player_id = reader.get("username")
     result = await _get_service(request).get_new_messages(
         after_id=after_id, player_id_heartbeat=player_id
     )

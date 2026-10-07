@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from guguwebui.constant import user_db
+from guguwebui.utils.auth_token import resolve_web_token
 
 
 def account_snapshot_from_user(user: dict) -> Dict[str, Any]:
@@ -33,9 +34,9 @@ def account_snapshot_from_request_session(request) -> Optional[Dict[str, Any]]:
     在无 Depends 上下文中仅从 session/cookie 尝试解析用户（同步）。
     若无法识别则返回 None。主要用于少数必须从 Request 取 session 的场景。
     """
-    token = request.cookies.get("token")
-    if token and token in user_db.get("token", {}) and request.session.get("logged_in"):
-        username = request.session.get("username")
+    user = resolve_web_token(request.cookies.get("token"), purge_expired=False)
+    if user is not None:
+        username = user["username"]
         nickname = None
         if username is not None:
             nickname = user_db.get("qq_nicknames", {}).get(str(username))

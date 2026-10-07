@@ -1,5 +1,4 @@
 import datetime
-import random
 import secrets
 import string
 import time
@@ -38,7 +37,10 @@ class ChatService:
 
         cleanup_chat_verifications()
 
-        code = "".join(random.choices(string.digits + string.ascii_uppercase, k=6))
+        alphabet = string.digits + string.ascii_uppercase
+        code = "".join(secrets.choice(alphabet) for _ in range(6))
+        while code in user_db["chat_verification"]:
+            code = "".join(secrets.choice(alphabet) for _ in range(6))
         expire_minutes = config.get("chat_verification_expire_minutes", 10)
         expire_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
             minutes=expire_minutes

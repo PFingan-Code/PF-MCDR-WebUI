@@ -6,7 +6,30 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from guguwebui.constant import DEFALUT_CONFIG, user_db
+from guguwebui.utils.auth_token import is_expired, resolve_web_token
 from guguwebui.utils.auth_util import verify_password
+from guguwebui.utils.rate_limit import (login_retry_after, record_login_failure,
+                                        record_login_success)
+
+_LOGIN_SCOPE = "web"
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _too_many_attempts(wait_seconds: int) -> JSONResponse:
+    wait_seconds = max(1, int(wait_seconds))
+    return JSONResponse(
+        {
+            "status": "error",
+            "code": "too_many_attempts",
+            "message": f"登录尝试过于频繁，请 {wait_seconds} 秒后再试。",
+            "data": {"retry_after": wait_seconds},
+        },
+        status_code=429,
+        headers={"Retry-After": str(wait_seconds)},
+    )
 
 
 def _is_admin_from_config(server_config: dict, username: str) -> bool:
@@ -46,10 +69,14 @@ class AuthService:
         )
         root_path = request.scope.get("root_path", "")
         cookie_path = root_path if root_path else "/"
+        client_ip = _client_ip(request)
 
         if account and password:
             account = account.replace("<", "").replace(">", "")
             password = password.replace("<", "").replace(">", "")
+            wait = login_retry_after(_LOGIN_SCOPE, client_ip, account)
+            if wait > 0:
+                return _too_many_attempts(wait)
             disable_other_admin = server_config.get("disable_other_admin", False)
             super_admin_account = str(server_config.get("super_admin_account"))
 
@@ -64,6 +91,7 @@ class AuthService:
             if account in user_db["user"] and verify_password(
                 password, user_db["user"][account]
             ):
+                record_login_success(_LOGIN_SCOPE, client_ip, account)
                 token = secrets.token_hex(16)
                 expiry = now + (
                     datetime.timedelta(days=365)
@@ -106,6 +134,7 @@ class AuthService:
                 )
                 return response
             else:
+                record_login_failure(_LOGIN_SCOPE, client_ip, account)
                 return JSONResponse(
                     {"status": "error", "message": "账号或密码错误。"}, status_code=401
                 )
@@ -118,33 +147,50 @@ class AuthService:
                     status_code=403,
                 )
 
+            # 临时码不对应账号，只做 IP 级限制
+            wait = login_retry_after(_LOGIN_SCOPE, client_ip)
+            if wait > 0:
+                return _too_many_attempts(wait)
+
             if temp_code not in user_db["temp"]:
+                record_login_failure(_LOGIN_SCOPE, client_ip)
                 return JSONResponse(
                     {"status": "error", "message": "临时登录码无效。"}, status_code=401
                 )
 
             temp_info = user_db["temp"][temp_code]
-            
+
             # 兼容旧格式（字符串）和新格式（字典）
             if isinstance(temp_info, dict):
                 # 新格式：包含 expire_time 和 qq_id
-                expire_time_str = temp_info.get("expire_time", "")
+                expire_time_value = temp_info.get("expire_time", "")
                 qq_id = temp_info.get("qq_id")
-                is_valid = expire_time_str > str(now) if expire_time_str else False
             else:
                 # 旧格式：直接是过期时间字符串
-                expire_time_str = temp_info
+                expire_time_value = temp_info
                 qq_id = None
-                is_valid = expire_time_str > str(now) if isinstance(expire_time_str, str) else False
+            is_valid = not is_expired(expire_time_value, now)
 
             if is_valid:
+                # 如果有关联的QQ号，使用QQ号作为用户名；否则使用 tempuser
+                username = str(qq_id) if qq_id else "tempuser"
+
+                # 与账号密码登录一致：禁用其他管理员时，只有超级管理员可登录。
+                # 不消耗临时码，过期后自然失效。
+                if not self.login_admin_check(
+                    username,
+                    server_config.get("disable_other_admin", False),
+                    server_config.get("super_admin_account"),
+                ):
+                    return JSONResponse(
+                        {"status": "error", "message": "只有超级管理才能登录。"},
+                        status_code=403,
+                    )
+
                 token = secrets.token_hex(16)
                 expiry = now + datetime.timedelta(hours=2)
                 max_age = datetime.timedelta(hours=2).total_seconds()
 
-                # 如果有关联的QQ号，使用QQ号作为用户名；否则使用 tempuser
-                username = qq_id if qq_id else "tempuser"
-                
                 # 获取昵称（如果有）
                 nickname = None
                 if qq_id:
@@ -188,6 +234,7 @@ class AuthService:
                 if temp_code in user_db["temp"]:
                     del user_db["temp"][temp_code]
                     user_db.save()
+                record_login_failure(_LOGIN_SCOPE, client_ip)
                 return JSONResponse(
                     {"status": "error", "message": "临时登录码无效或已过期。"}, status_code=401
                 )
@@ -345,25 +392,17 @@ class AuthService:
         disable_other_admin = server_config.get("disable_other_admin", False)
         super_admin_account = server_config.get("super_admin_account")
 
-        if (
-            token
-            and user_db["token"].get(token)
-            and user_db["token"][token]["expire_time"]
-            > str(datetime.datetime.now(datetime.timezone.utc))
-            and self.login_admin_check(
-                user_db["token"][token]["user_name"],
-                disable_other_admin,
-                super_admin_account,
-            )
+        user = resolve_web_token(token)
+        if user is not None and self.login_admin_check(
+            user["username"], disable_other_admin, super_admin_account
         ):
             request.session["logged_in"] = True
             request.session["token"] = token
-            request.session["username"] = user_db["token"][token]["user_name"]
+            request.session["username"] = user["username"]
             return True
 
-        # 如果 token 无效，清理
-        if token:
-            if token in user_db["token"]:
-                del user_db["token"][token]
-                user_db.save()
+        # 如果 token 无效（含过期、被禁止登录），清理
+        if token and token in user_db["token"]:
+            del user_db["token"][token]
+            user_db.save()
         return False

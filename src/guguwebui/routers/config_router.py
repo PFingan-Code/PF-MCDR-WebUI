@@ -68,9 +68,10 @@ async def api_load_config(
     path: str = Query(..., description="文件路径（受 SafePath 约束）"),
     translation: bool = Query(False, description="是否加载 _lang 翻译文件"),
     type: str = Query("auto", description="解析类型：auto/json/yml/yaml/properties/html"),
-    _user: dict = Depends(get_current_user),
+    _admin: dict = Depends(get_current_admin),
 ):
-    """加载配置文件，统一返回 {path, type, content, config_data} 文档"""
+    """加载配置文件，统一返回 {path, type, content, config_data} 文档（仅管理员：
+    可读目录含 WebUI 自身配置中的 AI Key、面板 token 等敏感信息）"""
     doc = request.app.state.config_service.load_config(path, translation, type)
     return success(doc)
 

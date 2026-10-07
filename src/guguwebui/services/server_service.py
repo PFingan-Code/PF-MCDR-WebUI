@@ -9,6 +9,36 @@ from guguwebui.utils.api_cache import api_cache
 from guguwebui.utils.mc_util import get_java_server_info, get_server_port
 from guguwebui.utils.mcdr_adapter import MCDRAdapter
 
+# 该插件自身的管理子命令（含 MCDR 别名 plg）；reload/unload/disable 会中断当前请求
+_PLUGIN_SELF_SUBCOMMANDS = {"reload", "unload", "disable"}
+_MCDR_PLUGIN_LITERALS = {"plugin", "plg"}
+_PLUGIN_SELF_ID = "guguwebui"
+
+
+def _is_forbidden_command(command: str) -> bool:
+    """命中禁用命令返回 True。
+
+    归一化后比较：合并空白、去首尾空白、忽略大小写，并兼容
+    "!!MCDR"/"!!mcdr"、"plugin"/"plg" 与 reload/unload/disable 等价的写法，
+    避免大小写或多余空格绕过黑名单。
+    """
+    normalized = " ".join(command.split()).lower()
+    if normalized.startswith("/"):
+        normalized = normalized[1:].strip()
+    if not normalized:
+        return False
+
+    # 服务器停机命令（应通过 !!MCDR server 或面板控制触发）
+    parts = normalized.split(" ")
+    if parts[0] == "stop" or parts[0] == "minecraft:stop":
+        return True
+
+    # WebUI 自身的插件管理命令
+    if len(parts) >= 4 and parts[0] == "!!mcdr" and parts[1] in _MCDR_PLUGIN_LITERALS:
+        if parts[2] in _PLUGIN_SELF_SUBCOMMANDS and parts[3] == _PLUGIN_SELF_ID:
+            return True
+    return False
+
 
 class ServerService:
     def __init__(self, server, log_watcher=None, config_service=None):
@@ -331,12 +361,7 @@ class ServerService:
         if not command:
             return {"status": "error", "message": "Command cannot be empty"}
 
-        forbidden_commands = [
-            "!!MCDR plugin reload guguwebui",
-            "!!MCDR plugin unload guguwebui",
-            "stop",
-        ]
-        if command in forbidden_commands:
+        if _is_forbidden_command(command):
             return {"status": "error", "message": "该命令已被禁止执行"}
 
         # 防止通过换行符注入多条命令（会写入服务器标准输入 / RCON）

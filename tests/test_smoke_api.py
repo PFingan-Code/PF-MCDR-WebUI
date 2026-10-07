@@ -23,6 +23,7 @@ from guguwebui.structures import BusinessException
 def client():
     from guguwebui.web_server import app
     from guguwebui.dependencies.auth import (
+        get_chat_reader,
         get_current_admin,
         get_current_user,
         get_current_user_or_chat_session,
@@ -46,6 +47,12 @@ def client():
     app.dependency_overrides[get_super_admin] = lambda: {
         "username": "admin",
         "token": "test-token",
+    }
+    # 聊天消息读取：WebUI 登录态即可（公开聊天页走聊天会话）
+    app.dependency_overrides[get_chat_reader] = lambda: {
+        "username": "admin",
+        "token": "test-token",
+        "auth_via": "session",
     }
 
     class _Config:
