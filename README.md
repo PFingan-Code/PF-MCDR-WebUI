@@ -66,7 +66,7 @@
 ### 安装与更新
 1. 从 [Releases](https://github.com/PFingan-Code/PF-MCDR-WebUI/releases) 下载最新的 `.mcdr` 文件。
 2. 放入 MCDR 的 `plugins` 文件夹。
-3. 重启 MCDR 或在控制台执行 `!!MCDR admin reload all`。
+3. 重启 MCDR 或在控制台执行 `!!MCDR plugin load guguweb_v1.xx.xx.mcdr`。
 
 > [!IMPORTANT]
 > **升级提示**: WebUI 会自动将旧版 `guguwebui_static` 迁移到 `config/guguwebui/guguwebui_static`，并将插件自有数据合并到 `config/guguwebui/guguwebui.sqlite3`。旧文件会保留，建议升级前备份。
@@ -163,6 +163,14 @@ A: 查看 [插件兼容](https://pf-doc.pfingan.com/main/#/PF-webui/开发/插�
 | [WolfgangFahl](https://github.com/zauberzeug/nicegui/issues/1956) | uvicorn 线程化 | 参考了其在 uvicorn 线程化运行方面的实现思路 |
 | [Minecraft Wiki（文本组件）](https://zh.minecraft.wiki/w/文本组件) | 文本组件格式规范 | RText 解析器所依据的格式规范 |
 | [mcstatus](https://github.com/py-mine/mcstatus) | Minecraft 服务器状态查询 | 用于查询 Minecraft Java 版服务器状态的 Python 库 |
+
+| 联动插件 | 联动内容或功能 | 备注 |
+|---|---|---|
+| [player_ip_logger](https://github.com/PFingan-Code/PF-player_ip_logger) | 获取玩家 IP 记录，用于补充玩家信息及识别 Carpet 假人 | 未安装或未启用时，相关识别可能不准确 |
+| [PrimeBackup](https://tisunion.github.io/PrimeBackup/zh/quick_start/) | 读取备份数据，并通过插件命令执行备份、恢复、删除等操作 | 用于 WebUI 备份管理，可选安装 |
+| [QuickBackupM](https://github.com/TISUnion/QuickBackupM) | 读取备份数据，并通过插件命令执行备份、恢复、删除等操作 | 用于 WebUI 备份管理，可选安装 |
+| [GUGUBot](https://github.com/PFingan-Code/PF-GUGUBot) | 通过 QQ 注册 WebUI 系统模块，支持设置密码和获取临时登录码 | 可选安装 |
+| [fastapi_mcdr](https://github.com/PFingan-Code/PF-player_ip_logger) | 将 WebUI 挂载为 FastAPI 子应用，共享其 Web 服务入口 | 可选安装，未检测到时使用独立服务器模式 |
 
 | 特别鸣谢 | 说明 |
 |---|---|
