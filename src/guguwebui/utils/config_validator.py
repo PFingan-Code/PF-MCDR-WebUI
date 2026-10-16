@@ -4,6 +4,7 @@ import socket
 from typing import Any, Dict, Tuple
 
 from guguwebui.constant import DEFALUT_CONFIG
+from guguwebui.utils.request_security import is_valid_origin
 
 
 class ConfigValidator:
@@ -118,7 +119,7 @@ class ConfigValidator:
             self.warnings.append(f"repositories 类型错误，期望 list，实际: {type(repositories)}")
             validated_config['repositories'] = DEFALUT_CONFIG['repositories']
 
-        # 反向代理 / 来源白名单：类型错误回退默认；trusted_proxies 中无法解析的项提示并剔除
+        # 反向代理 / 来源白名单：类型错误回退默认；列表中的非法项提示并剔除
         for key in ('trusted_proxies', 'allowed_origins'):
             value = config.get(key)
             if value is None:
@@ -134,6 +135,17 @@ class ConfigValidator:
                         valid.append(item.strip())
                     except ValueError:
                         self.warnings.append(f"trusted_proxies 中的 {item!r} 不是有效的 IP 或 CIDR，已忽略")
+                validated_config[key] = valid
+            else:
+                valid = []
+                for item in value:
+                    item = item.strip()
+                    if is_valid_origin(item):
+                        valid.append(item)
+                    else:
+                        self.warnings.append(
+                            f"allowed_origins 中的 {item!r} 不是有效的 HTTP(S) 来源，已忽略"
+                        )
                 validated_config[key] = valid
 
         panel_slaves = config.get('panel_slaves')

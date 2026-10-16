@@ -139,37 +139,69 @@ def _normalize_netloc(netloc: str, scheme: str = "") -> str:
     return f"{host}:{port}" if port else host
 
 
-def _allowed_hosts(request: HTTPConnection, config: dict) -> Set[str]:
-    hosts: Set[str] = set()
-    host = _normalize_netloc(request.headers.get("host") or "")
+def _origin_key(scheme: str, netloc: str) -> Optional[tuple[str, str]]:
+    """Normalize an origin into its scheme and authority components."""
+    scheme = (scheme or "").strip().lower()
+    if scheme not in ("http", "https"):
+        return None
+    normalized = _normalize_netloc(netloc, scheme)
+    if not normalized:
+        return None
+    return scheme, normalized
+
+
+def is_valid_origin(value: str) -> bool:
+    """Return whether a value is a complete HTTP(S) origin without a path."""
+    value = (value or "").strip()
+    if not value or any(char.isspace() for char in value):
+        return False
+    try:
+        parts = urlsplit(value)
+        if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+            return False
+        if parts.path or parts.query or parts.fragment or parts.username is not None or parts.password is not None:
+            return False
+        if parts.netloc.endswith(":"):
+            return False
+        if parts.hostname is None:
+            return False
+        _ = parts.port
+    except ValueError:
+        return False
+    return _origin_key(parts.scheme, parts.netloc) is not None
+
+
+def _allowed_origins(request: HTTPConnection, config: dict) -> Set[tuple[str, str]]:
+    origins: Set[tuple[str, str]] = set()
+    request_scheme = "https" if request_is_https(request, config) else "http"
+
+    host = _origin_key(request_scheme, request.headers.get("host") or "")
     if host:
-        hosts.add(host)
+        origins.add(host)
+
     if is_from_trusted_proxy(request, config):
         forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",")[0]
-        normalized = _normalize_netloc(forwarded_host)
-        if normalized:
-            hosts.add(normalized)
+        forwarded = _origin_key(request_scheme, forwarded_host)
+        if forwarded:
+            origins.add(forwarded)
+
     for item in config.get("allowed_origins") or []:
-        if not isinstance(item, str) or not item.strip():
-            continue
-        item = item.strip()
-        if "://" in item:
-            parts = urlsplit(item)
-            normalized = _normalize_netloc(parts.netloc, parts.scheme)
-        else:
-            normalized = _normalize_netloc(item)
-        if normalized:
-            hosts.add(normalized)
-    return hosts
+        if isinstance(item, str) and is_valid_origin(item):
+            parts = urlsplit(item.strip())
+            allowed = _origin_key(parts.scheme, parts.netloc)
+            if allowed:
+                origins.add(allowed)
+    return origins
 
 
 def origin_allowed(request: HTTPConnection, origin: str, config: Optional[dict] = None) -> bool:
     """Origin 是否与当前站点同源（或在 allowed_origins 中）。"Origin: null" 一律拒绝。"""
     origin = (origin or "").strip()
-    if not origin or origin.lower() == "null":
+    if not origin or origin.lower() == "null" or not is_valid_origin(origin):
+        return False
+    parts = urlsplit(origin)
+    allowed = _origin_key(parts.scheme, parts.netloc)
+    if allowed is None:
         return False
     config = _get_config(request) if config is None else config
-    parts = urlsplit(origin)
-    if parts.scheme not in ("http", "https") or not parts.netloc:
-        return False
-    return _normalize_netloc(parts.netloc, parts.scheme) in _allowed_hosts(request, config)
+    return allowed in _allowed_origins(request, config)

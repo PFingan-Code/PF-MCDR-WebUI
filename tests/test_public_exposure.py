@@ -23,7 +23,7 @@ from guguwebui.constant import user_db
 from guguwebui.utils import totp
 from guguwebui.utils.auth_util import hash_password
 from guguwebui.utils.rate_limit import reset_all as reset_rate_limits
-from guguwebui.utils.request_security import get_client_ip, origin_allowed
+from guguwebui.utils.request_security import get_client_ip, is_valid_origin, origin_allowed
 
 from test_auth_hardening import _ConfigStub, _cookie_token, _ServerStub
 
@@ -102,20 +102,53 @@ def _origin_ok(origin: str, host: str, config: dict | None = None, headers: dict
 
 
 def test_origin_allowed_rules():
-    assert _origin_ok("https://mc.example.com", "mc.example.com")
+    assert _origin_ok("http://mc.example.com", "mc.example.com")
+    assert _origin_ok(
+        "https://mc.example.com",
+        "mc.example.com",
+        {"trusted_proxies": ["127.0.0.1"]},
+        {"x-forwarded-proto": "https"},
+    )
     assert _origin_ok("http://1.2.3.4:25580", "1.2.3.4:25580")
-    assert _origin_ok("https://mc.example.com", "mc.example.com:443")
+    assert _origin_ok(
+        "https://mc.example.com",
+        "mc.example.com:443",
+        {"trusted_proxies": ["127.0.0.1"]},
+        {"x-forwarded-proto": "https"},
+    )
     assert not _origin_ok("https://evil.frp-host.com", "mc.frp-host.com")
     assert not _origin_ok("null", "mc.example.com")
     assert not _origin_ok("http://mc.example.com:8080", "mc.example.com")
+    # 协议也属于来源的一部分，HTTP 不得匹配 HTTPS 站点或白名单。
+    https_config = {"trusted_proxies": ["127.0.0.1"], "allowed_origins": ["https://mc.example.com"]}
+    https_headers = {"x-forwarded-proto": "https"}
+    assert not _origin_ok("http://mc.example.com", "mc.example.com", https_config, https_headers)
+    assert not _origin_ok(
+        "http://mc.example.com",
+        "mc.example.com",
+        {"trusted_proxies": ["127.0.0.1"], "allowed_origins": ["http://other.example.com"]},
+        https_headers,
+    )
+    assert is_valid_origin("https://mc.example.com:8443")
+    assert not is_valid_origin("mc.example.com/path")
+    assert not is_valid_origin("https://mc.example.com/path")
+    assert not is_valid_origin("https://user:pass@mc.example.com")
     # 反向代理改写了 Host：用 allowed_origins 放行对外地址
     assert _origin_ok(
         "https://mc.example.com", "127.0.0.1:8000", {"allowed_origins": ["https://mc.example.com"]}
     )
+    assert not _origin_ok(
+        "http://mc.example.com", "127.0.0.1:8000", {"allowed_origins": ["https://mc.example.com"]}
+    )
     # X-Forwarded-Host 只采信可信代理
     fwd = {"x-forwarded-host": "mc.example.com"}
     assert not _origin_ok("https://mc.example.com", "127.0.0.1:8000", {}, fwd)
-    assert _origin_ok("https://mc.example.com", "127.0.0.1:8000", {"trusted_proxies": ["127.0.0.1"]}, fwd)
+    assert _origin_ok(
+        "https://mc.example.com",
+        "127.0.0.1:8000",
+        {"trusted_proxies": ["127.0.0.1"]},
+        {**fwd, "x-forwarded-proto": "https"},
+    )
 
 
 @pytest.fixture()
@@ -290,6 +323,16 @@ def test_totp_ticket_dies_after_max_attempts(totp_user):
         assert client.post("/api/login/totp", data={"ticket": ticket, "code": good}).status_code == 401
 
 
+def test_totp_setup_confirmation_is_rate_limited():
+    from guguwebui.utils import rate_limit
+
+    for _ in range(10):
+        rate_limit.record_totp_setup_failure(_USER)
+    assert rate_limit.totp_setup_retry_after(_USER) > 0
+    rate_limit.reset_totp_setup_failures(_USER)
+    assert rate_limit.totp_setup_retry_after(_USER) == 0
+
+
 def test_wrong_password_does_not_reveal_super_admin():
     """disable_other_admin 下，密码错误一律 401；只有密码正确的非超管才会得到 403。"""
     user_db["user"][_USER] = hash_password(_PASSWORD)
@@ -339,6 +382,23 @@ def test_temp_code_global_limit_spans_ips():
     for _ in range(100):
         rate_limit.record_temp_code_failure()
     assert rate_limit.temp_code_retry_after() > 0
+
+
+def test_config_validator_discards_invalid_allowed_origins():
+    from guguwebui.utils.config_validator import ConfigValidator
+
+    validator = ConfigValidator()
+    corrected = {}
+    validator._validate_other_configs(
+        {
+            "trusted_proxies": [],
+            "allowed_origins": ["https://valid.example.com", "mc.example.com/path", "not-a-url"],
+        },
+        corrected,
+    )
+    assert corrected["allowed_origins"] == ["https://valid.example.com"]
+    origin_warnings = [warning for warning in validator.warnings if "allowed_origins" in warning]
+    assert len(origin_warnings) == 2
 
 
 # --------------------------------------------------------------------------
@@ -416,3 +476,22 @@ def test_qq_qr_start_is_rate_limited(qr_client):
     with TestClient(qr_client) as client:
         statuses = [client.post("/api/login/qq_qr/start").status_code for _ in range(11)]
     assert statuses[:10] == [200] * 10 and statuses[10] == 429
+
+
+def test_qq_qr_status_is_rate_limited(qr_client, monkeypatch):
+    from guguwebui.services.qq_qr_login_service import QQQRCodeLoginService
+
+    calls = 0
+
+    def query_status(code):
+        nonlocal calls
+        calls += 1
+        return {"state": "wait"}
+
+    monkeypatch.setattr(QQQRCodeLoginService, "query_status", staticmethod(query_status))
+    with TestClient(qr_client) as client:
+        code = client.post("/api/login/qq_qr/start").json()["code"]
+        statuses = [client.get("/api/login/qq_qr/status", params={"code": code}).status_code for _ in range(101)]
+    assert statuses[:100] == [200] * 100
+    assert statuses[100] == 429
+    assert calls == 100

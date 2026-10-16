@@ -80,6 +80,8 @@ ip_limiter = FailureLimiter(max_failures=20, window_seconds=LOGIN_WINDOW_SECONDS
 temp_code_global_limiter = FailureLimiter(max_failures=100, window_seconds=LOGIN_WINDOW_SECONDS)
 TOTP_WINDOW_SECONDS = 900
 totp_account_limiter = FailureLimiter(max_failures=10, window_seconds=TOTP_WINDOW_SECONDS)
+TOTP_SETUP_WINDOW_SECONDS = 600
+totp_setup_account_limiter = FailureLimiter(max_failures=10, window_seconds=TOTP_SETUP_WINDOW_SECONDS)
 
 # 匿名接口的请求频率（每次请求都计数）
 _hit_limiters: Dict[str, FailureLimiter] = {}
@@ -133,6 +135,18 @@ def record_totp_failure(account: str) -> None:
     totp_account_limiter.record_failure((account or "").strip().lower())
 
 
+def totp_setup_retry_after(account: str) -> int:
+    return _wait_seconds(totp_setup_account_limiter.retry_after((account or "").strip().lower()))
+
+
+def record_totp_setup_failure(account: str) -> None:
+    totp_setup_account_limiter.record_failure((account or "").strip().lower())
+
+
+def reset_totp_setup_failures(account: str) -> None:
+    totp_setup_account_limiter.reset((account or "").strip().lower())
+
+
 def hit_limited(bucket: str, ip: str, max_hits: int, window_seconds: float) -> int:
     """记录一次请求；超出频率时返回需等待的秒数（本次不计入），否则返回 0。"""
     with _hit_lock:
@@ -153,6 +167,7 @@ def reset_all() -> None:
     ip_limiter.clear()
     temp_code_global_limiter.clear()
     totp_account_limiter.clear()
+    totp_setup_account_limiter.clear()
     with _hit_lock:
         for limiter in _hit_limiters.values():
             limiter.clear()

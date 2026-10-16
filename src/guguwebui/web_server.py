@@ -70,7 +70,10 @@ from guguwebui.utils import totp
 from guguwebui.utils.auth_token import revoke_user_tokens
 from guguwebui.utils.auth_util import migrate_old_config, verify_password
 from guguwebui.utils.rate_limit import (hit_limited, login_retry_after,
-                                        record_login_failure)
+                                        record_login_failure,
+                                        record_totp_setup_failure,
+                                        reset_totp_setup_failures,
+                                        totp_setup_retry_after)
 from guguwebui.utils.request_security import get_client_ip, origin_allowed
 from guguwebui.utils.log_watcher import LogWatcher
 from guguwebui.utils.mc_util import get_plugin_version
@@ -471,6 +474,16 @@ async def qq_qr_login_status(request: Request, code: str = ""):
             status_code=403,
         )
 
+    # 前端每 2 秒轮询一次；限制单 IP 的总查询量，避免每次请求都触发外部 QQ 请求。
+    config = request.app.state.config_service.get_config()
+    wait = hit_limited("qq_qr_status", get_client_ip(request, config), 100, 300)
+    if wait > 0:
+        return JSONResponse(
+            api_error(f"操作过于频繁，请 {wait} 秒后再试。", code="too_many_attempts", data={"retry_after": wait}),
+            status_code=429,
+            headers={"Retry-After": str(wait)},
+        )
+
     result = await asyncio.to_thread(QQQRCodeLoginService.query_status, code)
     state = str(result.get("state", "error"))
     if state != "wait":
@@ -627,10 +640,20 @@ async def api_totp_enable(
 ):
     """用验证码确认绑定；成功后注销该账号的其它登录会话。"""
     username = _require_password_account(user)
+    wait = totp_setup_retry_after(username)
+    if wait > 0:
+        raise BusinessException(
+            f"尝试过于频繁，请 {wait} 秒后再试。",
+            status_code=429,
+            code="too_many_attempts",
+            data={"retry_after": wait},
+        )
     if not totp.confirm_setup(username, body.code):
+        record_totp_setup_failure(username)
         raise BusinessException(
             "验证码错误或绑定已超时，请重新扫码后再试。", status_code=400, code="totp_invalid"
         )
+    reset_totp_setup_failures(username)
     revoked = revoke_user_tokens(username, keep=user.get("token"))
     record_operation(
         user,

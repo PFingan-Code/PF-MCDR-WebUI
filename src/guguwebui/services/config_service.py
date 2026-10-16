@@ -18,6 +18,7 @@ from guguwebui.utils.i18n_util import (build_json_i18n_translations,
                                        consistent_type_update, get_comment)
 from guguwebui.utils.mc_util import find_plugin_config_paths, get_server_port
 from guguwebui.utils.path_util import SafePath, get_base_dirs
+from guguwebui.utils.request_security import is_valid_origin
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +216,16 @@ class ConfigService:
         if config_info.trusted_proxies is not None:
             web_config["trusted_proxies"] = _clean_str_list(config_info.trusted_proxies)
         if config_info.allowed_origins is not None:
-            web_config["allowed_origins"] = _clean_str_list(config_info.allowed_origins)
+            allowed_origins = _clean_str_list(config_info.allowed_origins)
+            invalid_origins = [item for item in allowed_origins if not is_valid_origin(item)]
+            if invalid_origins:
+                raise BusinessException(
+                    f"allowed_origins 包含无效的 HTTP(S) 来源: {', '.join(invalid_origins)}",
+                    status_code=400,
+                    code="invalid_allowed_origins",
+                    data={"invalid": invalid_origins},
+                )
+            web_config["allowed_origins"] = allowed_origins
         if config_info.public_chat_enabled is not None:
             web_config["public_chat_enabled"] = config_info.public_chat_enabled
         if config_info.public_chat_to_game_enabled is not None:
