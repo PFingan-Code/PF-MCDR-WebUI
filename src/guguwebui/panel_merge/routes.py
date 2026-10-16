@@ -36,6 +36,7 @@ from guguwebui.structures import (
     PairingRequest,
 )
 from guguwebui.structures.envelope import ApiSuccessEnvelope, success
+from guguwebui.utils.request_security import get_client_ip
 
 router = APIRouter()
 
@@ -189,7 +190,7 @@ async def api_pairing_request(request: Request, body: PairingRequest):
     st["enabled_until"] = None
 
     master_name = (body.master_name or "").strip()
-    client_ip = request.client.host if request.client else ""
+    client_ip = get_client_ip(request)
 
     request_id = uuid.uuid4().hex
     st.setdefault("pending", {})[request_id] = {
@@ -456,4 +457,4 @@ async def api_pairing_connect_status(
         st.setdefault("connects", {}).pop(connect_id, None)
         return JSONResponse(success({"phase": "denied"}))
 
-    return JSONResponse(success({"phase": "pending"}))
+    return JSONResponse(success({"phase": "pending"}))

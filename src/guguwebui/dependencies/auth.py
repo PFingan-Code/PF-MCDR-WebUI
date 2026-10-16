@@ -1,4 +1,4 @@
-import ipaddress
+import hmac
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Query, Request, status
@@ -6,6 +6,8 @@ from fastapi import Depends, HTTPException, Query, Request, status
 from guguwebui.constant import user_db
 from guguwebui.structures import ForbiddenException
 from guguwebui.utils.auth_token import is_expired, resolve_web_token
+from guguwebui.utils.request_security import (get_client_ip, ip_in_networks,
+                                              parse_networks)
 
 
 async def get_optional_user(request: Request) -> Optional[dict]:
@@ -32,7 +34,7 @@ async def get_optional_user(request: Request) -> Optional[dict]:
 
                 # 可选：限制主服来源 IP
                 if allowed_master_ips:
-                    client_ip = request.client.host if request.client else ""
+                    client_ip = get_client_ip(request, server_config)
                     if not _ip_allowed(client_ip, allowed_master_ips):
                         raise HTTPException(
                             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -64,7 +66,8 @@ def _panel_token_enabled(token: str, allowed_tokens: list) -> bool:
     for item in allowed_tokens or []:
         if not isinstance(item, dict):
             continue
-        if str(item.get("token", "")).strip() != token:
+        expected = str(item.get("token", "")).strip()
+        if not expected or not hmac.compare_digest(expected.encode(), token.encode()):
             continue
         return bool(item.get("enabled", False))
     return False
@@ -72,30 +75,7 @@ def _panel_token_enabled(token: str, allowed_tokens: list) -> bool:
 
 def _ip_allowed(client_ip: str, allowed_master_ips: list) -> bool:
     """支持精确 IP 或 CIDR 段。"""
-    if not client_ip:
-        return False
-    try:
-        ip_obj = ipaddress.ip_address(client_ip)
-    except ValueError:
-        return False
-
-    for raw in allowed_master_ips or []:
-        if not isinstance(raw, str):
-            continue
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            if "/" in raw:
-                net = ipaddress.ip_network(raw, strict=False)
-                if ip_obj in net:
-                    return True
-            else:
-                if ip_obj == ipaddress.ip_address(raw):
-                    return True
-        except ValueError:
-            continue
-    return False
+    return ip_in_networks(client_ip, parse_networks(allowed_master_ips))
 
 def is_super_admin_user(request: Request, user: dict) -> bool:
     """判断用户是否为超级管理员（子服 Panel Token 视为放行，权限由主服侧控制）。

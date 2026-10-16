@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import api, { getBasePath, unwrapData } from '../utils/api'
+import { type LoginResult, parseLoginError } from '../utils/loginResult'
 
 interface AuthContextType {
   isAuthenticated: boolean | null
@@ -8,8 +9,9 @@ interface AuthContextType {
   isAdmin: boolean | null
   isSuperAdmin: boolean | null
   loading: boolean
-  login: (account: string, password: string, remember?: boolean) => Promise<{ success: boolean; message?: string }>
-  loginWithTempCode: (tempCode: string) => Promise<{ success: boolean; message?: string }>
+  login: (account: string, password: string, remember?: boolean) => Promise<LoginResult>
+  loginWithTempCode: (tempCode: string) => Promise<LoginResult>
+  completeTotpLogin: (ticket: string, code: string) => Promise<LoginResult>
   logout: () => Promise<void>
   checkLoginStatus: () => Promise<void>
 }
@@ -85,11 +87,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, message: response.data.message }
       }
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } } }
-      return {
-        success: false,
-        message: err.response?.data?.message || undefined,
-      }
+      return parseLoginError(error)
     }
   }
 
@@ -115,11 +113,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, message: response.data.message }
       }
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } } }
-      return {
-        success: false,
-        message: err.response?.data?.message || undefined,
+      return parseLoginError(error)
+    }
+  }
+
+  const completeTotpLogin = async (ticket: string, code: string): Promise<LoginResult> => {
+    try {
+      const formData = new FormData()
+      formData.append('ticket', ticket)
+      formData.append('code', code.replace(/\s+/g, ''))
+      const response = await api.post('/login/totp', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      if (response.data.status === 'success') {
+        await checkLoginStatus()
+        return { success: true }
       }
+      return { success: false, message: response.data.message }
+    } catch (error: unknown) {
+      return parseLoginError(error)
     }
   }
 
@@ -164,6 +176,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loading,
         login,
         loginWithTempCode,
+        completeTotpLogin,
         logout,
         checkLoginStatus,
       }}

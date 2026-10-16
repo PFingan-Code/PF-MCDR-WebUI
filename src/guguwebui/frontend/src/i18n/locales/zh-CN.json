@@ -778,7 +778,13 @@
                 "force_standalone": "强制独立运行",
                 "force_standalone_desc": "忽略 fastapi_mcdr 插件，强制作为独立 Web 服务运行",
                 "force_standalone_effect": "修改后需要重启插件才能生效",
-                "save": "保存安全设置"
+                "save": "保存安全设置",
+                "enable_qq_qr": "启用 QQ 扫码登录",
+                "enable_qq_qr_desc": "暴露到公网时建议关闭：扫码确认页不显示本站信息，容易被诱导扫码",
+                "trusted_proxies": "可信反向代理",
+                "trusted_proxies_desc": "每行一个 IP 或 CIDR。只采信这些地址传来的 X-Forwarded-For 等转发头，用于识别访客真实 IP（登录限流依赖它）。frpc 与 MCDR 同机时填 127.0.0.1 和 ::1；保存后立即生效",
+                "allowed_origins": "额外允许的访问地址",
+                "allowed_origins_desc": "每行一个，如 https://mc.example.com。默认只接受与请求 Host 同源的写操作；反向代理改写了 Host 头导致操作被拒绝时在此填写对外地址"
             },
             "ai": {
                 "title": "AI 模型配置",
@@ -859,6 +865,27 @@
                 "install_title": "将PIM安装到独立插件",
                 "installed_tip": "PIM已作为独立插件安装。您可以在插件管理页面中查看和管理它。",
                 "desc": "将WebUI的插件安装管理器（PIM）作为独立插件运行，以为其它插件提供安装支持，如果您不知道它是干什么的，请不要安装。"
+            },
+            "totp": {
+                "title": "两步验证",
+                "desc": "为当前登录账号绑定验证器 App（Google Authenticator、Microsoft Authenticator 等）。启用后，密码登录和 QQ 扫码登录都需要再输入 6 位动态验证码。",
+                "status_on": "已启用",
+                "unsupported": "当前登录方式（临时码 / 子服令牌）不支持设置两步验证，请使用账号密码登录。",
+                "enable": "启用两步验证",
+                "password_hint": "请先输入当前账号的登录密码。",
+                "password_placeholder": "当前密码",
+                "code_placeholder": "6 位验证码",
+                "next": "下一步",
+                "step_scan": "用验证器 App 扫描二维码（或手动输入密钥）",
+                "step_code": "输入 App 中显示的 6 位验证码完成绑定",
+                "manual_key": "无法扫码时手动输入密钥：",
+                "copy": "复制",
+                "confirm": "确认绑定",
+                "enabled_ok": "两步验证已启用，该账号在其他设备上的登录已失效。",
+                "disable_hint": "如需关闭，请输入当前密码和验证码。验证器丢失时可在 MCDR 控制台执行 !!webui 2fa reset <账号> 解除。",
+                "disable": "关闭两步验证",
+                "disabled_ok": "两步验证已关闭。",
+                "failed": "操作失败"
             }
         },
         "mods": {
@@ -1329,7 +1356,11 @@
         "go_chat": "我是玩家，我需要访问服务器聊天页",
         "msg": {
             "login_failed": "登录失败"
-        }
+        },
+        "totp_hint": "该账号已启用两步验证，请输入验证器 App 中显示的 6 位验证码。",
+        "totp_code": "两步验证码",
+        "totp_back": "返回重新登录",
+        "totp_verify": "验证并登录"
     },
     "theme": {
         "system": "跟随系统",

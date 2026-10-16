@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { ArrowRight, Check, KeyRound, Languages, Loader2, Lock, Moon, QrCode, Sun, User, Zap } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Check, KeyRound, Languages, Loader2, Lock, Moon, QrCode, ShieldCheck, Sun, User, Zap } from 'lucide-react'
 import QRCode from 'qrcode'
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -7,12 +7,13 @@ import { useNavigate } from 'react-router-dom'
 import VersionFooter from '../components/VersionFooter'
 import { useAuth } from '../hooks/useAuth'
 import { useTheme } from '../hooks/useTheme'
-import api from '../utils/api'
+import { parseLoginError } from '../utils/loginResult'
+import api, { unwrapData } from '../utils/api'
 
 const Login: React.FC = () => {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
-  const { login, loginWithTempCode, isAuthenticated, checkLoginStatus } = useAuth()
+  const { login, loginWithTempCode, completeTotpLogin, isAuthenticated, checkLoginStatus } = useAuth()
   const { mode, setMode, label: themeLabel } = useTheme()
   const [loginMode, setLoginMode] = useState<'qqQr' | 'password' | 'tempCode'>('qqQr')
   const [account, setAccount] = useState('')
@@ -25,6 +26,46 @@ const Login: React.FC = () => {
   const [qrImageUrl, setQrImageUrl] = useState('')
   const [qrState, setQrState] = useState<'idle' | 'wait' | 'used' | 'error' | 'ok'>('idle')
   const [qrMessage, setQrMessage] = useState('')
+
+  // 可用登录方式（由后端配置决定）
+  const [qqQrEnabled, setQqQrEnabled] = useState(true)
+  const [tempCodeEnabled, setTempCodeEnabled] = useState(true)
+
+  // 两步验证：第一步（密码 / 扫码）通过后拿到票据，再提交验证器中的验证码
+  const [totpTicket, setTotpTicket] = useState<string | null>(null)
+  const [totpCode, setTotpCode] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .get('/login/options')
+      .then((resp) => {
+        if (cancelled) return
+        const opts = unwrapData<{ qq_qr_enabled?: boolean; temp_code_enabled?: boolean }>(resp, {})
+        const qr = opts.qq_qr_enabled !== false
+        setQqQrEnabled(qr)
+        setTempCodeEnabled(opts.temp_code_enabled !== false)
+        const temp = opts.temp_code_enabled !== false
+        if (!qr || !temp) setLoginMode((m) => ((m === 'qqQr' && !qr) || (m === 'tempCode' && !temp) ? 'password' : m))
+      })
+      .catch(() => {
+        /* 旧版后端无此接口：保持默认 */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const startTotpStep = (ticket: string) => {
+    setTotpTicket(ticket)
+    setTotpCode('')
+    setError('')
+  }
+
+  const leaveTotpStep = () => {
+    setTotpTicket(null)
+    setTotpCode('')
+  }
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -43,6 +84,17 @@ const Login: React.FC = () => {
     setLoading(true)
     setError('')
     try {
+      if (totpTicket) {
+        const result = await completeTotpLogin(totpTicket, totpCode)
+        if (result.success) {
+          navigate('/index')
+          return
+        }
+        if (result.ticketExpired) leaveTotpStep()
+        setTotpCode('')
+        setError(result.message || t('login.msg.login_failed'))
+        return
+      }
       if (loginMode === 'qqQr') {
         await (async () => {
           setQrImageUrl('')
@@ -108,8 +160,15 @@ const Login: React.FC = () => {
               setError(stMsg || t('login.msg.login_failed'))
               return
             } catch (err: unknown) {
-              const ax = err as { response?: { data?: { message?: string } } }
-              const msg = ax?.response?.data?.message || t('login.msg.login_failed')
+              const parsed = parseLoginError(err)
+              if (parsed.totpTicket) {
+                setQrImageUrl('')
+                setQrState('idle')
+                setQrMessage('')
+                startTotpStep(parsed.totpTicket)
+                return
+              }
+              const msg = parsed.message || t('login.msg.login_failed')
               setQrState('error')
               setQrMessage(msg)
               setError(msg)
@@ -132,6 +191,8 @@ const Login: React.FC = () => {
 
         if (result.success) {
           navigate('/index')
+        } else if (result.totpTicket) {
+          startTotpStep(result.totpTicket)
         } else {
           setError(result.message || t('login.msg.login_failed'))
         }
@@ -275,8 +336,48 @@ const Login: React.FC = () => {
               </motion.div>
             )}
 
+            {totpTicket ? (
+              <div className="space-y-4">
+                <div className="flex items-start gap-3 rounded-2xl bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/30 px-4 py-3">
+                  <ShieldCheck className="w-5 h-5 mt-0.5 shrink-0 text-blue-600 dark:text-blue-400" />
+                  <p className="text-sm text-slate-700 dark:text-slate-200">{t('login.totp_hint')}</p>
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="totpCode" className="block text-sm font-bold text-slate-700 dark:text-slate-300 ml-1">
+                    {t('login.totp_code')}
+                  </label>
+                  <input
+                    id="totpCode"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    autoFocus
+                    required
+                    maxLength={6}
+                    pattern="[0-9]{6}"
+                    value={totpCode}
+                    onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    className="block w-full px-4 py-3 text-center text-2xl tracking-[0.5em] font-mono bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-2xl text-slate-900 dark:text-white placeholder-slate-300 dark:placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all duration-200"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    leaveTotpStep()
+                    setError('')
+                  }}
+                  className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-500 hover:text-blue-600 transition-colors"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  {t('login.totp_back')}
+                </button>
+              </div>
+            ) : (
+            <>
             {/* 登录模式切换 */}
             <div className="flex gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+              {qqQrEnabled && (
               <button
                 type="button"
                 onClick={() => {
@@ -291,6 +392,7 @@ const Login: React.FC = () => {
                 <QrCode className="inline-block w-4 h-4 mr-2" />
                 {t('login.qq_qr_login')}
               </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -304,6 +406,7 @@ const Login: React.FC = () => {
               >
                 {t('login.password_login')}
               </button>
+              {tempCodeEnabled && (
               <button
                 type="button"
                 onClick={() => {
@@ -317,6 +420,7 @@ const Login: React.FC = () => {
               >
                 {t('login.temp_code_login')}
               </button>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -436,6 +540,8 @@ const Login: React.FC = () => {
                 </div>
               )}
             </div>
+            </>
+            )}
 
             <button
               type="submit"
@@ -450,7 +556,11 @@ const Login: React.FC = () => {
               ) : (
                 <div className="flex items-center gap-2">
                   <span>
-                    {loginMode === 'qqQr' ? t('login.qq_qr_start') : t('login.login')}
+                    {totpTicket
+                      ? t('login.totp_verify')
+                      : loginMode === 'qqQr'
+                        ? t('login.qq_qr_start')
+                        : t('login.login')}
                   </span>
                   <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                 </div>

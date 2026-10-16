@@ -36,6 +36,14 @@ def migrate_old_config():
                 json.dump(old_config, f, ensure_ascii=False, indent=4)
 
 
+# WebUI 管理账号密码最短长度（新建 / 修改时校验，不影响已有账号登录）
+MIN_PASSWORD_LENGTH = 8
+
+
+def password_too_short(password: str) -> bool:
+    return len(password or "") < MIN_PASSWORD_LENGTH
+
+
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -86,10 +94,22 @@ def create_user_account(user_name: str, password: str) -> bool:
 
 def change_user_account(user_name: str, old_password: str, new_password: str) -> bool:
     if user_name in user_db['user'] and verify_password(old_password, user_db['user'][user_name]):
-        user_db['user'][user_name] = pwd_context.hash(new_password)
-        user_db.save()
+        set_user_password(user_name, new_password)
         return True
     return False
+
+
+def set_user_password(user_name: str, new_password: str) -> None:
+    """设置密码并注销该账号的全部已登录会话（密码泄露后改密即可踢掉对方）。"""
+    from guguwebui.utils.auth_token import revoke_user_tokens
+
+    user_db['user'][user_name] = pwd_context.hash(new_password)
+    user_db.save()
+    revoke_user_tokens(user_name)
+
+
+def _reply_password_too_short(src) -> None:
+    src.reply(RText(f"密码长度至少 {MIN_PASSWORD_LENGTH} 位！", color=RColor.red))
 
 
 def create_account_command(src, ctx, host: str, port: int):
@@ -101,6 +121,9 @@ def create_account_command(src, ctx, host: str, port: int):
     account, password = ctx['account'], ctx['password']
     account = account.replace('<', '').replace('>', '')
     password = password.replace('<', '').replace('>', '')
+    if password_too_short(password):
+        _reply_password_too_short(src)
+        return
 
     success = create_user_account(account, password)
     if success:
@@ -128,6 +151,9 @@ def change_account_command(src, ctx, host: str, port: int):
     account = account.replace('<', '').replace('>', '')
     old_password = old_password.replace('<', '').replace('>', '')
     new_password = new_password.replace('<', '').replace('>', '')
+    if password_too_short(new_password):
+        _reply_password_too_short(src)
+        return
 
     success = change_user_account(account, old_password, new_password)
     if success:
@@ -159,6 +185,48 @@ def get_temp_password_command(src, ctx, host: str, port: int):
         RText(f"http://{format_host_for_url(host)}:{port}", color=RColor.aqua)
     )
     src.reply(temp_msg)
+
+
+def _console_only(src) -> bool:
+    if hasattr(src, 'player') and src.player is not None:
+        src.reply(RText("此命令只能在终端中执行！请在MCDR控制台中使用此命令。", color=RColor.red))
+        return False
+    return True
+
+
+def reset_totp_command(src, ctx):
+    """!!webui 2fa reset <account>：验证器丢失时由控制台解除两步验证，并注销该账号全部会话。"""
+    if not _console_only(src):
+        return
+    from guguwebui.utils import totp
+    from guguwebui.utils.auth_token import revoke_user_tokens
+
+    account = ctx['account']
+    if not totp.disable(account):
+        src.reply(RTextList(
+            RText("账户 ", color=RColor.red), RText(account, color=RColor.yellow),
+            RText(" 未启用两步验证。", color=RColor.red),
+        ))
+        return
+    revoked = revoke_user_tokens(account)
+    src.reply(RTextList(
+        RText("已解除账户 ", color=RColor.green), RText(account, color=RColor.yellow),
+        RText(f" 的两步验证，并注销 {revoked} 个登录会话。", color=RColor.green),
+    ))
+
+
+def revoke_sessions_command(src, ctx):
+    """!!webui logout <account>：注销某账号的全部登录会话（怀疑 cookie 泄露时使用）。"""
+    if not _console_only(src):
+        return
+    from guguwebui.utils.auth_token import revoke_user_tokens
+
+    account = ctx['account']
+    revoked = revoke_user_tokens(account)
+    src.reply(RTextList(
+        RText("已注销账户 ", color=RColor.green), RText(account, color=RColor.yellow),
+        RText(f" 的 {revoked} 个登录会话。", color=RColor.green),
+    ))
 
 
 def cleanup_chat_verifications():

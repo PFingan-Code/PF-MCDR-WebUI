@@ -24,6 +24,7 @@ import { useTranslation } from 'react-i18next'
 import { NiceSelect } from '../components/NiceSelect'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { SettingsCardSkeleton, Skeleton } from '../components/Skeleton'
+import TwoFactorCard from '../components/TwoFactorCard'
 import { useAuth } from '../hooks/useAuth'
 import api, { getTargetServerId, isCancel, unwrapData } from '../utils/api'
 
@@ -59,6 +60,9 @@ interface WebConfig {
   super_admin_account: string | number
   disable_admin_login_web: boolean
   enable_temp_login_password: boolean
+  qq_qr_login_enabled?: boolean
+  trusted_proxies?: string[]
+  allowed_origins?: string[]
   ai_api_key_configured: boolean
   ai_model: string
   ai_api_url: string
@@ -406,11 +410,13 @@ const Settings: React.FC = () => {
     }
   }
 
-  const toggleSetting = async (key: 'disable_admin_login_web' | 'enable_temp_login_password') => {
+  const toggleSetting = async (
+    key: 'disable_admin_login_web' | 'enable_temp_login_password' | 'qq_qr_login_enabled'
+  ) => {
     if (!config) return
     setSaving(key)
     try {
-      const next = !config[key]
+      const next = key === 'qq_qr_login_enabled' ? config[key] === false : !config[key]
       const { data: resp } = await api.put('/web-config', { [key]: next })
       if (resp.status === 'success') {
         showNotification(
@@ -1449,6 +1455,11 @@ const Settings: React.FC = () => {
             </motion.div>
           )}
 
+          {/* Two-factor authentication (per account) */}
+          <motion.div variants={itemVariants}>
+            <TwoFactorCard />
+          </motion.div>
+
           {/* Security Settings */}
           <motion.div variants={itemVariants} className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
             <div className="flex items-center gap-3 text-rose-500">
@@ -1493,6 +1504,47 @@ const Settings: React.FC = () => {
 
               <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl">
                 <div>
+                  <p className="font-bold text-slate-900 dark:text-white">{t('page.settings.security.enable_qq_qr')}</p>
+                  <p className="text-xs text-slate-500">{t('page.settings.security.enable_qq_qr_desc')}</p>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium mt-1">{t('page.settings.security.enable_temp_code_effect')}</p>
+                </div>
+                <button
+                  onClick={() => toggleSetting('qq_qr_login_enabled')}
+                  className={`w-12 h-6 rounded-full p-1 transition-colors ${config.qq_qr_login_enabled !== false ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'}`}
+                >
+                  <motion.div
+                    animate={{ x: config.qq_qr_login_enabled !== false ? 24 : 0 }}
+                    className="w-4 h-4 bg-white rounded-full shadow-sm"
+                  />
+                </button>
+              </div>
+
+              <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl space-y-2">
+                <p className="font-bold text-slate-900 dark:text-white">{t('page.settings.security.trusted_proxies')}</p>
+                <p className="text-xs text-slate-500">{t('page.settings.security.trusted_proxies_desc')}</p>
+                <textarea
+                  rows={2}
+                  value={(config.trusted_proxies ?? []).join('\n')}
+                  onChange={(e) => setConfig({ ...config, trusted_proxies: e.target.value.split('\n') })}
+                  placeholder={'127.0.0.1\n::1'}
+                  className="w-full px-4 py-2.5 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-rose-500/60 transition-all outline-none"
+                />
+              </div>
+
+              <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl space-y-2">
+                <p className="font-bold text-slate-900 dark:text-white">{t('page.settings.security.allowed_origins')}</p>
+                <p className="text-xs text-slate-500">{t('page.settings.security.allowed_origins_desc')}</p>
+                <textarea
+                  rows={2}
+                  value={(config.allowed_origins ?? []).join('\n')}
+                  onChange={(e) => setConfig({ ...config, allowed_origins: e.target.value.split('\n') })}
+                  placeholder="https://mc.example.com"
+                  className="w-full px-4 py-2.5 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-rose-500/60 transition-all outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl">
+                <div>
                   <p className="font-bold text-slate-900 dark:text-white">{t('page.settings.security.force_standalone')}</p>
                   <p className="text-xs text-slate-500">{t('page.settings.security.force_standalone_desc')}</p>
                   <p className="text-xs text-amber-600 dark:text-amber-400 font-medium mt-1">{t('page.settings.security.force_standalone_effect')}</p>
@@ -1511,8 +1563,10 @@ const Settings: React.FC = () => {
             <div className="flex justify-end pt-2">
               <button
                 onClick={() =>
-                  handleSave('config', {
-                    force_standalone: config.force_standalone
+                  handleSave('security', {
+                    force_standalone: config.force_standalone,
+                    trusted_proxies: (config.trusted_proxies ?? []).map((x) => x.trim()).filter(Boolean),
+                    allowed_origins: (config.allowed_origins ?? []).map((x) => x.trim()).filter(Boolean),
                   })
                 }
                 disabled={saving === 'security'}

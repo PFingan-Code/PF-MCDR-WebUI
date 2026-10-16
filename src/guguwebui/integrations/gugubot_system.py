@@ -5,9 +5,11 @@ import logging
 from typing import Optional
 
 from guguwebui.constant import user_db
-from guguwebui.utils.auth_util import (change_user_account,
+from guguwebui.utils.auth_util import (MIN_PASSWORD_LENGTH,
+                                       change_user_account,
                                        create_temp_password,
-                                       create_user_account, hash_password)
+                                       create_user_account, hash_password,
+                                       password_too_short, set_user_password)
 
 
 class WebUISystem:
@@ -244,6 +246,10 @@ class WebUISystem:
                 reply_msg = self._build_message("密码不能为空！")
                 await self._reply(broadcast_info, reply_msg)
                 return
+            if password_too_short(password):
+                reply_msg = self._build_message(f"密码长度至少 {MIN_PASSWORD_LENGTH} 位！")
+                await self._reply(broadcast_info, reply_msg)
+                return
 
             # 使用 QQ 号作为用户名
             qq_id = str(broadcast_info.sender_id)
@@ -253,8 +259,7 @@ class WebUISystem:
             # 检查用户是否已存在
             if qq_id in user_db.get("user", {}):
                 # 用户已存在，更新密码
-                user_db["user"][qq_id] = hash_password(password)
-                user_db.save()
+                set_user_password(qq_id, password)
             else:
                 # 创建新用户
                 success = create_user_account(qq_id, password)

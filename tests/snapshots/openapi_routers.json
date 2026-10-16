@@ -2424,7 +2424,7 @@
           "chat"
         ],
         "summary": "Chat Check Verification",
-        "description": "检查验证码验证状态：data.verified 为业务状态（不再复用 status）",
+        "description": "检查验证码验证状态：data.verified 为业务状态（不再复用 status）\n\n验证码被游戏内玩家绑定后可用于设置该玩家的密码，猜测不存在的验证码计入 IP 级失败次数。",
         "operationId": "chat_check_verification___api_chat_verifications_{code}__GET",
         "parameters": [
           {
@@ -5368,6 +5368,45 @@
               }
             ],
             "title": "Panel Master"
+          },
+          "qq_qr_login_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qq Qr Login Enabled"
+          },
+          "trusted_proxies": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trusted Proxies"
+          },
+          "allowed_origins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Origins"
           }
         },
         "type": "object",

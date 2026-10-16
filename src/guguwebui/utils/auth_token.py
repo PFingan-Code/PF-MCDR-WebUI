@@ -66,3 +66,21 @@ def resolve_web_token(token: Optional[str], *, purge_expired: bool = True) -> Op
                 pass
         return None
     return {"username": str(username), "token": token}
+
+
+def revoke_user_tokens(username: str, keep: Optional[str] = None) -> int:
+    """注销某账号的全部登录 token（可保留当前 token），返回注销数量。"""
+    from guguwebui.constant import user_db
+
+    tokens = user_db.get("token") or {}
+    if not isinstance(tokens, dict):
+        return 0
+    victims = [
+        t for t, rec in tokens.items()
+        if t != keep and isinstance(rec, dict) and str(rec.get("user_name")) == str(username)
+    ]
+    for t in victims:
+        tokens.pop(t, None)
+    if victims:
+        user_db.save()
+    return len(victims)

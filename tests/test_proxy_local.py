@@ -117,7 +117,10 @@ def test_local_only_paths_refer_to_real_routes():
     app = _build_app()
     registered = {_full_path(route, prefix) for route, prefix in iter_api_routes(app)}
     # web_server 本地端点（login/logout/auth/me）不在 routers 应用内，跳过它们
-    web_server_local = {"/api/login", "/api/login/qq_qr/start", "/api/login/qq_qr/status", "/api/logout", "/api/auth/me"}
+    web_server_local = {
+        "/api/login", "/api/login/qq_qr/start", "/api/login/qq_qr/status",
+        "/api/login/options", "/api/login/totp", "/api/logout", "/api/auth/me",
+    }
     for path in LOCAL_ONLY_PATHS:
         if path in web_server_local:
             continue

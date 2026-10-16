@@ -773,7 +773,13 @@
                 "force_standalone": "Force standalone mode",
                 "force_standalone_desc": "Ignore fastapi_mcdr plugin, force running as standalone Web service",
                 "force_standalone_effect": "Changes take effect after restarting the plugin",
-                "save": "Save Security Settings"
+                "save": "Save Security Settings",
+                "enable_qq_qr": "Enable QQ QR login",
+                "enable_qq_qr_desc": "Recommended off when exposed to the internet: the QQ confirmation screen does not show this site, so users can be tricked into scanning",
+                "trusted_proxies": "Trusted reverse proxies",
+                "trusted_proxies_desc": "One IP or CIDR per line. Forwarding headers such as X-Forwarded-For are only trusted from these addresses, which is how the real visitor IP is found (login rate limiting relies on it). If frpc runs on the same machine as MCDR, use 127.0.0.1 and ::1. Takes effect immediately after saving",
+                "allowed_origins": "Additional allowed origins",
+                "allowed_origins_desc": "One per line, e.g. https://mc.example.com. By default only write requests from the same origin as the Host header are accepted; add your public address here if a reverse proxy rewrites Host and requests get rejected"
             },
             "ai": {
                 "title": "AI Model Configuration",
@@ -854,6 +860,27 @@
                 "install_title": "Install PIM as standalone plugin",
                 "installed_tip": "PIM is installed as a standalone plugin. You can manage it in the plugin management page.",
                 "desc": "Run the WebUI Plugin Installation Manager (PIM) as a standalone plugin to provide installation support for other plugins. If you are not sure what this is, please do not install it."
+            },
+            "totp": {
+                "title": "Two-factor authentication",
+                "desc": "Link an authenticator app (Google Authenticator, Microsoft Authenticator, etc.) to the signed-in account. Once enabled, both password and QQ QR sign-in also require a 6-digit code.",
+                "status_on": "Enabled",
+                "unsupported": "Two-factor setup is not available for this sign-in method (temporary code / panel token). Sign in with your account password.",
+                "enable": "Enable two-factor authentication",
+                "password_hint": "Enter the current password for this account first.",
+                "password_placeholder": "Current password",
+                "code_placeholder": "6-digit code",
+                "next": "Next",
+                "step_scan": "Scan the QR code with your authenticator app (or enter the key manually)",
+                "step_code": "Enter the 6-digit code shown in the app to finish",
+                "manual_key": "Can't scan? Enter this key manually:",
+                "copy": "Copy",
+                "confirm": "Confirm",
+                "enabled_ok": "Two-factor authentication enabled. Sessions on other devices for this account were signed out.",
+                "disable_hint": "To turn it off, enter your current password and a code. If you lost your authenticator, run !!webui 2fa reset <account> in the MCDR console.",
+                "disable": "Disable two-factor authentication",
+                "disabled_ok": "Two-factor authentication disabled.",
+                "failed": "Operation failed"
             }
         },
         "mods": {
@@ -1250,7 +1277,11 @@
         "go_chat": "I'm a player, I need to access the server chat page",
         "msg": {
             "login_failed": "Login failed"
-        }
+        },
+        "totp_hint": "Two-factor authentication is enabled for this account. Enter the 6-digit code from your authenticator app.",
+        "totp_code": "Verification code",
+        "totp_back": "Back to sign in",
+        "totp_verify": "Verify and sign in"
     },
     "theme": {
         "system": "System",

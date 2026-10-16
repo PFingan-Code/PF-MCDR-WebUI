@@ -112,6 +112,7 @@ pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 # chat_verification: {code: {player_id: None, expire_time: timestamp, used: False}}
 # chat_sessions: {session_id: {player_id: player_id, expire_time: timestamp}}
 # qq_nicknames: {qq_id: nickname} - QQ号到昵称的映射
+# totp: {username: {secret, enabled, last_step, pending_secret, pending_expire}} - 两步验证（见 utils/totp.py）
 DEFALUT_DB = {
     "token": {},
     "user": {},
@@ -120,6 +121,7 @@ DEFALUT_DB = {
     "chat_verification": {},
     "chat_sessions": {},
     "qq_nicknames": {},
+    "totp": {},
 }
 DEFALUT_CONFIG = {
     "host": "127.0.0.1",
@@ -127,6 +129,14 @@ DEFALUT_CONFIG = {
     "super_admin_account": 123456789123456789,
     "disable_other_admin": False,
     "allow_temp_password": True,
+    "qq_qr_login_enabled": True,  # 是否允许 QQ 扫码登录（暴露到公网时建议关闭，见 docs/公网部署安全指南.md）
+    # 反向代理（frp / nginx 等）地址列表，支持 IP 或 CIDR。仅来自这些地址的请求才采信
+    # X-Forwarded-For / X-Real-IP / X-Forwarded-Proto / X-Forwarded-Host。
+    # frpc 与 MCDR 在同一台机器时填 ["127.0.0.1", "::1"]；为空表示不信任任何转发头。
+    "trusted_proxies": [],
+    # 额外允许的来源（Origin），如 "https://mc.example.com"。默认只允许与请求 Host 同源，
+    # 用于防御跨站请求；反向代理改写了 Host 头时需在此填写对外访问地址。
+    "allowed_origins": [],
     "force_standalone": False,  # 是否强制独立运行（忽略fastapi_mcdr插件）
     "log_capture_compat_mode": True,  # 日志捕获兼容模式（通过读取日志文件获取）
     "ai_api_key": "",  # AI API密钥

@@ -88,7 +88,8 @@ class ConfigValidator:
         # 验证布尔值配置
         bool_configs = [
             'disable_other_admin', 'allow_temp_password', 'force_standalone',
-            'ssl_enabled', 'public_chat_enabled', 'public_chat_to_game_enabled'
+            'ssl_enabled', 'public_chat_enabled', 'public_chat_to_game_enabled',
+            'qq_qr_login_enabled'
         ]
         for key in bool_configs:
             value = config.get(key)
@@ -116,6 +117,24 @@ class ConfigValidator:
         if not isinstance(repositories, list):
             self.warnings.append(f"repositories 类型错误，期望 list，实际: {type(repositories)}")
             validated_config['repositories'] = DEFALUT_CONFIG['repositories']
+
+        # 反向代理 / 来源白名单：类型错误回退默认；trusted_proxies 中无法解析的项提示并剔除
+        for key in ('trusted_proxies', 'allowed_origins'):
+            value = config.get(key)
+            if value is None:
+                value = []
+            if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+                self.warnings.append(f"{key} 类型错误，期望 str 列表，实际: {value!r}")
+                validated_config[key] = list(DEFALUT_CONFIG[key])
+            elif key == 'trusted_proxies':
+                valid = []
+                for item in value:
+                    try:
+                        ipaddress.ip_network(item.strip(), strict=False)
+                        valid.append(item.strip())
+                    except ValueError:
+                        self.warnings.append(f"trusted_proxies 中的 {item!r} 不是有效的 IP 或 CIDR，已忽略")
+                validated_config[key] = valid
 
         panel_slaves = config.get('panel_slaves')
         if panel_slaves is None:

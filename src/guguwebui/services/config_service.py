@@ -22,6 +22,10 @@ from guguwebui.utils.path_util import SafePath, get_base_dirs
 logger = logging.getLogger(__name__)
 
 
+def _clean_str_list(items) -> list:
+    return [str(x).strip() for x in (items or []) if str(x).strip()]
+
+
 class ConfigService:
     def __init__(self, server):
         self.server = server
@@ -127,6 +131,9 @@ class ConfigService:
             "super_admin_account": config["super_admin_account"],
             "disable_admin_login_web": config["disable_other_admin"],
             "enable_temp_login_password": config["allow_temp_password"],
+            "qq_qr_login_enabled": config.get("qq_qr_login_enabled", True),
+            "trusted_proxies": config.get("trusted_proxies", []) or [],
+            "allowed_origins": config.get("allowed_origins", []) or [],
             # 多服面板合并
             "panel_role": config.get("panel_role", "master"),
             "panel_slaves": config.get("panel_slaves", []) or [],
@@ -203,6 +210,12 @@ class ConfigService:
             web_config["ssl_keyfile"] = config_info.ssl_keyfile
         if config_info.ssl_keyfile_password is not None:
             web_config["ssl_keyfile_password"] = config_info.ssl_keyfile_password
+        if config_info.qq_qr_login_enabled is not None:
+            web_config["qq_qr_login_enabled"] = config_info.qq_qr_login_enabled
+        if config_info.trusted_proxies is not None:
+            web_config["trusted_proxies"] = _clean_str_list(config_info.trusted_proxies)
+        if config_info.allowed_origins is not None:
+            web_config["allowed_origins"] = _clean_str_list(config_info.allowed_origins)
         if config_info.public_chat_enabled is not None:
             web_config["public_chat_enabled"] = config_info.public_chat_enabled
         if config_info.public_chat_to_game_enabled is not None:

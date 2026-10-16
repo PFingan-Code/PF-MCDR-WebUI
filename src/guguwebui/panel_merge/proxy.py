@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse, Response
 
 from guguwebui.dependencies.auth import get_current_admin, get_current_user
 from guguwebui.services.config_service import ConfigService
+from guguwebui.utils.request_security import get_client_ip
 
 
 def get_target_server_id(request: Request) -> str:
@@ -30,6 +31,8 @@ LOCAL_ONLY_PATHS: Tuple[str, ...] = (
     "/api/login",
     "/api/login/qq_qr/start",
     "/api/login/qq_qr/status",
+    "/api/login/options",
+    "/api/login/totp",
     "/api/logout",
     "/api/auth/me",
     "/api/servers",
@@ -46,6 +49,7 @@ LOCAL_ONLY_LEGACY_PATHS: Tuple[str, ...] = (
 
 LOCAL_ONLY_PREFIXES: Tuple[str, ...] = (
     "/api/pairing/",
+    "/api/auth/totp",  # 两步验证绑定属于主服本地账号
 )
 
 
@@ -159,7 +163,9 @@ def _filter_outbound_request_headers(request: Request) -> Dict[str, str]:
     headers: Dict[str, str] = {}
     for k, v in request.headers.items():
         lk = k.lower()
-        if lk in {"host", "content-length", "cookie"}:
+        # origin/referer 属于主服站点，转发给子服会被其同源校验误判；转发头由下方按真实 IP 重写
+        if lk in {"host", "content-length", "cookie", "origin", "referer",
+                  "x-forwarded-for", "x-real-ip", "x-forwarded-host", "x-forwarded-proto"}:
             continue
         headers[k] = v
     return headers
@@ -187,7 +193,7 @@ async def proxy_request_to_slave(request: Request, slave: dict, sub_path: str) -
     query = _filter_query_items(list(request.query_params.multi_items()))
     headers = _filter_outbound_request_headers(request)
     headers["X-Panel-Token"] = str(slave.get("token", "")).strip()
-    headers["X-Forwarded-For"] = request.client.host if request.client else ""
+    headers["X-Forwarded-For"] = get_client_ip(request)
 
     verify_tls = bool(slave.get("verify_tls", True))
     session: aiohttp.ClientSession = request.app.state.http_session

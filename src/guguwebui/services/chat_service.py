@@ -21,6 +21,9 @@ from guguwebui.utils.mc_util import (
 )
 
 
+
+MAX_PENDING_CHAT_VERIFICATIONS = 500
+
 class ChatService:
     def __init__(self, server, config_service=None):
         self.server = server
@@ -36,6 +39,11 @@ class ChatService:
             )
 
         cleanup_chat_verifications()
+        # 匿名接口：限制未过期验证码总量，防止被批量刷库
+        if len(user_db["chat_verification"]) >= MAX_PENDING_CHAT_VERIFICATIONS:
+            raise BusinessException(
+                "当前待验证的验证码过多，请稍后再试", status_code=429, code="too_many_verifications"
+            )
 
         alphabet = string.digits + string.ascii_uppercase
         code = "".join(secrets.choice(alphabet) for _ in range(6))

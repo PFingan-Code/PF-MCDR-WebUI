@@ -33,8 +33,10 @@ from guguwebui.structures import (
     ChatSetPasswordRequest,
 )
 from guguwebui.structures.envelope import ApiSuccessEnvelope, PageEnvelope, success
-from guguwebui.utils.rate_limit import (login_retry_after, record_login_failure,
+from guguwebui.utils.rate_limit import (hit_limited, login_retry_after,
+                                        record_login_failure,
                                         record_login_success)
+from guguwebui.utils.request_security import get_client_ip
 
 router = APIRouter(tags=["chat"])
 
@@ -46,7 +48,7 @@ def _get_service(request: Request) -> ChatService:
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    return get_client_ip(request)
 
 
 def _ensure_not_limited(client_ip: str, account: Optional[str] = None) -> None:
@@ -63,14 +65,32 @@ def _ensure_not_limited(client_ip: str, account: Optional[str] = None) -> None:
 @router.post("/chat/verifications", response_model=ApiSuccessEnvelope)
 async def chat_generate_code(request: Request):
     """生成聊天页验证码（公开聊天页未启用 → 403 public_chat_disabled）"""
+    wait = hit_limited("chat_verification", _client_ip(request), 10, 300)
+    if wait > 0:
+        raise BusinessException(
+            f"尝试过于频繁，请 {wait} 秒后再试",
+            status_code=429,
+            code="too_many_attempts",
+            data={"retry_after": wait},
+        )
     code, expire_minutes = _get_service(request).generate_verification_code()
     return JSONResponse(success({"code": code, "expire_minutes": expire_minutes}))
 
 
 @router.get("/chat/verifications/{code}", response_model=ApiSuccessEnvelope)
 async def chat_check_verification(request: Request, code: str):
-    """检查验证码验证状态：data.verified 为业务状态（不再复用 status）"""
-    result = _get_service(request).check_verification_status(code)
+    """检查验证码验证状态：data.verified 为业务状态（不再复用 status）
+
+    验证码被游戏内玩家绑定后可用于设置该玩家的密码，猜测不存在的验证码计入 IP 级失败次数。
+    """
+    client_ip = _client_ip(request)
+    _ensure_not_limited(client_ip)
+    try:
+        result = _get_service(request).check_verification_status(code)
+    except BusinessException as e:
+        if e.code == "verification_not_found":
+            record_login_failure(_CHAT_SCOPE, client_ip)
+        raise
     return JSONResponse(success(result))
 
 
@@ -193,4 +213,4 @@ async def send_chat_message(request: Request, body: ChatMessageCreateRequest):
         body.session_id or "",
         is_admin,
     )
-    return JSONResponse(success(message=result.get("message")))
+    return JSONResponse(success(message=result.get("message")))

@@ -6,16 +6,20 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from guguwebui.constant import DEFALUT_CONFIG, user_db
+from guguwebui.utils import totp
 from guguwebui.utils.auth_token import is_expired, resolve_web_token
-from guguwebui.utils.auth_util import verify_password
+from guguwebui.utils.auth_util import hash_password, verify_password
 from guguwebui.utils.rate_limit import (login_retry_after, record_login_failure,
-                                        record_login_success)
+                                        record_login_success,
+                                        record_temp_code_failure,
+                                        record_totp_failure,
+                                        temp_code_retry_after, totp_retry_after)
+from guguwebui.utils.request_security import get_client_ip, request_is_https
 
 _LOGIN_SCOPE = "web"
 
-
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+# 账号不存在时也做一次同等开销的哈希校验，避免按响应耗时枚举账号
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(16))
 
 
 def _too_many_attempts(wait_seconds: int) -> JSONResponse:
@@ -44,6 +48,13 @@ def _is_super_admin_from_config(server_config: dict, username: str) -> bool:
     return str(username) == str(server_config.get("super_admin_account"))
 
 
+def _only_super_admin() -> JSONResponse:
+    return JSONResponse(
+        {"status": "error", "message": "只有超级管理才能登录。"},
+        status_code=403,
+    )
+
+
 class AuthService:
     def __init__(self, server, config_service=None):
         self.server = server
@@ -55,6 +66,85 @@ class AuthService:
             return False
         return True
 
+    def _load_config(self) -> dict:
+        return self.server.load_config_simple(
+            "config.json", DEFALUT_CONFIG, echo_in_console=False
+        )
+
+    def _issue_session(
+        self,
+        request: Request,
+        server_config: dict,
+        username: str,
+        lifetime: datetime.timedelta,
+        body: dict,
+    ) -> JSONResponse:
+        """签发 token（服务端记录 + HttpOnly cookie），并补齐 is_admin / is_super_admin。"""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        token = secrets.token_hex(16)
+        expiry = now + lifetime
+
+        request.session["logged_in"] = True
+        request.session["token"] = token
+        request.session["username"] = username
+
+        user_db["token"][token] = {
+            "user_name": username,
+            "expire_time": str(expiry),
+        }
+        user_db.save()
+
+        body = dict(body)
+        body.setdefault("status", "success")
+        body["is_admin"] = _is_admin_from_config(server_config, username)
+        body["is_super_admin"] = _is_super_admin_from_config(server_config, username)
+
+        root_path = request.scope.get("root_path", "")
+        response = JSONResponse(body)
+        response.set_cookie(
+            "token",
+            token,
+            expires=expiry,
+            path=root_path if root_path else "/",
+            httponly=True,
+            samesite="lax",
+            secure=request_is_https(request, server_config),
+            max_age=int(lifetime.total_seconds()),
+        )
+        return response
+
+    @staticmethod
+    def _account_lifetime(remember: bool) -> datetime.timedelta:
+        return datetime.timedelta(days=365) if remember else datetime.timedelta(days=1)
+
+    def _account_session(
+        self, request: Request, server_config: dict, account: str, remember: bool, extra: Optional[dict] = None
+    ) -> JSONResponse:
+        body = {
+            "message": "登录成功",
+            "nickname": user_db.get("qq_nicknames", {}).get(str(account)),
+        }
+        body.update(extra or {})
+        return self._issue_session(
+            request, server_config, account, self._account_lifetime(remember), body
+        )
+
+    @staticmethod
+    def _totp_challenge(account: str, remember: bool, extra: Optional[dict] = None) -> JSONResponse:
+        """第一因素已通过、需要两步验证码：返回票据，由 /api/login/totp 完成登录。
+
+        使用 401 + code=totp_required：不认识该字段的旧前端会按登录失败处理（失败即拒绝）。
+        """
+        ticket = totp.create_login_ticket(account, remember)
+        body = {
+            "status": "error",
+            "code": "totp_required",
+            "message": "该账号已启用两步验证，请输入验证器中的 6 位验证码。",
+            "data": {"ticket": ticket, "expires_in": totp.LOGIN_TICKET_SECONDS},
+        }
+        body.update(extra or {})
+        return JSONResponse(body, status_code=401)
+
     async def login(
         self,
         request: Request,
@@ -64,12 +154,8 @@ class AuthService:
         remember: bool,
     ):
         now = datetime.datetime.now(datetime.timezone.utc)
-        server_config = self.server.load_config_simple(
-            "config.json", DEFALUT_CONFIG, echo_in_console=False
-        )
-        root_path = request.scope.get("root_path", "")
-        cookie_path = root_path if root_path else "/"
-        client_ip = _client_ip(request)
+        server_config = self._load_config()
+        client_ip = get_client_ip(request, server_config)
 
         if account and password:
             account = account.replace("<", "").replace(">", "")
@@ -77,67 +163,33 @@ class AuthService:
             wait = login_retry_after(_LOGIN_SCOPE, client_ip, account)
             if wait > 0:
                 return _too_many_attempts(wait)
-            disable_other_admin = server_config.get("disable_other_admin", False)
-            super_admin_account = str(server_config.get("super_admin_account"))
 
-            if not self.login_admin_check(
-                account, disable_other_admin, super_admin_account
-            ):
-                return JSONResponse(
-                    {"status": "error", "message": "只有超级管理才能登录。"},
-                    status_code=403,
-                )
-
-            if account in user_db["user"] and verify_password(
-                password, user_db["user"][account]
-            ):
-                record_login_success(_LOGIN_SCOPE, client_ip, account)
-                token = secrets.token_hex(16)
-                expiry = now + (
-                    datetime.timedelta(days=365)
-                    if remember
-                    else datetime.timedelta(days=1)
-                )
-                max_age = (
-                    datetime.timedelta(days=365)
-                    if remember
-                    else datetime.timedelta(days=1)
-                ).total_seconds()
-
-                request.session["logged_in"] = True
-                request.session["token"] = token
-                request.session["username"] = account
-
-                user_db["token"][token] = {
-                    "user_name": account,
-                    "expire_time": str(expiry),
-                }
-                user_db.save()
-
-                # 获取昵称（如果有）
-                nickname = user_db.get("qq_nicknames", {}).get(str(account))
-
-                response = JSONResponse({
-                    "status": "success",
-                    "message": "登录成功",
-                    "nickname": nickname,
-                    "is_admin": _is_admin_from_config(server_config, account),
-                    "is_super_admin": _is_super_admin_from_config(server_config, account),
-                })
-                response.set_cookie(
-                    "token",
-                    token,
-                    expires=expiry,
-                    path=cookie_path,
-                    httponly=True,
-                    max_age=max_age,
-                )
-                return response
+            stored_hash = user_db["user"].get(account)
+            if stored_hash:
+                password_ok = verify_password(password, stored_hash)
             else:
+                verify_password(password, _DUMMY_PASSWORD_HASH)
+                password_ok = False
+            if not password_ok:
                 record_login_failure(_LOGIN_SCOPE, client_ip, account)
                 return JSONResponse(
                     {"status": "error", "message": "账号或密码错误。"}, status_code=401
                 )
+
+            # 先校验密码再判断管理员限制：不向未持有密码的人透露哪个账号是超级管理员
+            if not self.login_admin_check(
+                account,
+                server_config.get("disable_other_admin", False),
+                server_config.get("super_admin_account"),
+            ):
+                return _only_super_admin()
+
+            if totp.is_enabled(account):
+                # 两步验证完成前不清除失败计数，避免“密码正确 → 重置计数 → 继续猜验证码”
+                return self._totp_challenge(account, remember)
+
+            record_login_success(_LOGIN_SCOPE, client_ip, account)
+            return self._account_session(request, server_config, account, remember)
 
         elif temp_code:
             allow_temp_password = server_config.get("allow_temp_password", True)
@@ -147,13 +199,14 @@ class AuthService:
                     status_code=403,
                 )
 
-            # 临时码不对应账号，只做 IP 级限制
-            wait = login_retry_after(_LOGIN_SCOPE, client_ip)
+            # 临时码不对应账号：IP 级 + 全局失败次数限制
+            wait = max(login_retry_after(_LOGIN_SCOPE, client_ip), temp_code_retry_after())
             if wait > 0:
                 return _too_many_attempts(wait)
 
             if temp_code not in user_db["temp"]:
                 record_login_failure(_LOGIN_SCOPE, client_ip)
+                record_temp_code_failure()
                 return JSONResponse(
                     {"status": "error", "message": "临时登录码无效。"}, status_code=401
                 )
@@ -182,52 +235,26 @@ class AuthService:
                     server_config.get("disable_other_admin", False),
                     server_config.get("super_admin_account"),
                 ):
-                    return JSONResponse(
-                        {"status": "error", "message": "只有超级管理才能登录。"},
-                        status_code=403,
-                    )
+                    return _only_super_admin()
 
-                token = secrets.token_hex(16)
-                expiry = now + datetime.timedelta(hours=2)
-                max_age = datetime.timedelta(hours=2).total_seconds()
-
-                # 获取昵称（如果有）
-                nickname = None
-                if qq_id:
-                    nickname = user_db.get("qq_nicknames", {}).get(qq_id)
-
-                request.session["logged_in"] = True
-                request.session["token"] = token
-                request.session["username"] = username
-
-                user_db["token"][token] = {
-                    "user_name": username,
-                    "expire_time": str(expiry),
-                }
-                user_db.save()
+                # 临时码由 MCDR 控制台 / 机器人管理员签发，本身即带外凭证，不再要求两步验证码
+                response = self._issue_session(
+                    request,
+                    server_config,
+                    username,
+                    datetime.timedelta(hours=2),
+                    {
+                        "message": "临时登录成功",
+                        "username": username,
+                        "nickname": user_db.get("qq_nicknames", {}).get(qq_id) if qq_id else None,
+                    },
+                )
 
                 # 删除已使用的临时码
                 del user_db["temp"][temp_code]
                 user_db.save()
 
-                response_data = {
-                    "status": "success",
-                    "message": "临时登录成功",
-                    "username": username,
-                    "nickname": nickname,
-                    "is_admin": _is_admin_from_config(server_config, username),
-                    "is_super_admin": _is_super_admin_from_config(server_config, username),
-                }
-                response = JSONResponse(response_data)
-                response.set_cookie(
-                    "token",
-                    token,
-                    expires=expiry,
-                    path=cookie_path,
-                    httponly=True,
-                    max_age=max_age,
-                )
-                self.server.logger.info(f"临时用户登录成功，用户名: {username}")
+                self.server.logger.info(f"临时用户登录成功，用户名: {username}，来源 IP: {client_ip}")
                 return response
             else:
                 # 临时码已过期或无效，删除它
@@ -235,6 +262,7 @@ class AuthService:
                     del user_db["temp"][temp_code]
                     user_db.save()
                 record_login_failure(_LOGIN_SCOPE, client_ip)
+                record_temp_code_failure()
                 return JSONResponse(
                     {"status": "error", "message": "临时登录码无效或已过期。"}, status_code=401
                 )
@@ -252,15 +280,11 @@ class AuthService:
         state: Optional[str] = None,
     ):
         """
-        QR 扫码登录只需要账号存在（username=uin），无需密码验证。
+        QR 扫码登录只需要账号存在（username=uin），无需密码验证；
+        账号启用了两步验证时仍需验证码。
         成功时会设置 session + token cookie，返回与现有登录接口一致的 JSON 结构。
         """
-        now = datetime.datetime.now(datetime.timezone.utc)
-        server_config = self.server.load_config_simple(
-            "config.json", DEFALUT_CONFIG, echo_in_console=False
-        )
-        root_path = request.scope.get("root_path", "")
-        cookie_path = root_path if root_path else "/"
+        server_config = self._load_config()
 
         account = (account or "").replace("<", "").replace(">", "").strip()
         if not account:
@@ -272,10 +296,7 @@ class AuthService:
         disable_other_admin = server_config.get("disable_other_admin", False)
         super_admin_account = str(server_config.get("super_admin_account"))
         if not self.login_admin_check(account, disable_other_admin, super_admin_account):
-            return JSONResponse(
-                {"status": "error", "message": "只有超级管理才能登录。"},
-                status_code=403,
-            )
+            return _only_super_admin()
 
         if account not in user_db["user"]:
             create_cmd = f"!!webui create {account} <password>"
@@ -292,46 +313,59 @@ class AuthService:
                 status_code=401,
             )
 
-        token = secrets.token_hex(16)
-        expiry = now + (
-            datetime.timedelta(days=365) if remember else datetime.timedelta(days=1)
-        )
-        max_age = (
-            datetime.timedelta(days=365) if remember else datetime.timedelta(days=1)
-        ).total_seconds()
+        if totp.is_enabled(account):
+            return self._totp_challenge(account, remember, {"state": "totp_required"})
 
-        request.session["logged_in"] = True
-        request.session["token"] = token
-        request.session["username"] = account
+        extra = {"state": state} if state else None
+        return self._account_session(request, server_config, account, remember, extra)
 
-        user_db["token"][token] = {
-            "user_name": account,
-            "expire_time": str(expiry),
-        }
-        user_db.save()
+    async def complete_totp_login(self, request: Request, ticket: str, code: str):
+        """第二步：用登录票据 + 验证码完成登录。"""
+        server_config = self._load_config()
+        client_ip = get_client_ip(request, server_config)
 
-        nickname = user_db.get("qq_nicknames", {}).get(str(account))
+        info = totp.get_login_ticket(ticket)
+        if info is None:
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "code": "totp_ticket_invalid",
+                    "message": "登录已超时，请重新登录。",
+                },
+                status_code=401,
+            )
+        account = info["username"]
 
-        response_data = {
-            "status": "success",
-            "message": "登录成功",
-            "nickname": nickname,
-            "is_admin": _is_admin_from_config(server_config, account),
-            "is_super_admin": _is_super_admin_from_config(server_config, account),
-        }
-        if state:
-            response_data["state"] = state
+        wait = max(login_retry_after(_LOGIN_SCOPE, client_ip, account), totp_retry_after(account))
+        if wait > 0:
+            return _too_many_attempts(wait)
 
-        response = JSONResponse(response_data)
-        response.set_cookie(
-            "token",
-            token,
-            expires=expiry,
-            path=cookie_path,
-            httponly=True,
-            max_age=max_age,
-        )
-        return response
+        # 票据签发后配置可能已变化（如开启了“仅超级管理员”）
+        if not self.login_admin_check(
+            account,
+            server_config.get("disable_other_admin", False),
+            server_config.get("super_admin_account"),
+        ):
+            totp.consume_login_ticket(ticket)
+            return _only_super_admin()
+
+        if not totp.verify_code(account, code):
+            record_login_failure(_LOGIN_SCOPE, client_ip, account)
+            record_totp_failure(account)
+            remaining = totp.record_ticket_failure(ticket)
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "code": "totp_invalid" if remaining > 0 else "totp_ticket_invalid",
+                    "message": "验证码错误。" if remaining > 0 else "验证码错误次数过多，请重新登录。",
+                    "data": {"remaining_attempts": remaining},
+                },
+                status_code=401,
+            )
+
+        totp.consume_login_ticket(ticket)
+        record_login_success(_LOGIN_SCOPE, client_ip, account)
+        return self._account_session(request, server_config, account, info["remember"])
 
     async def logout(self, request: Request, response):
         """

@@ -245,6 +245,10 @@ def _start_standalone_server(
                 'host': host,
                 'port': port,
                 'log_level': 'warning',
+                # 不让 uvicorn 按默认规则（信任来自 127.0.0.1 的 X-Forwarded-For）改写客户端地址：
+                # frpc 正是从 127.0.0.1 连入，否则任何人都能伪造来源 IP 绕过登录限流。
+                # 转发头由 utils/request_security.py 按配置项 trusted_proxies 解析。
+                'proxy_headers': False,
             }
             config_params, ssl_enabled = _apply_ssl_config(
                 server, plugin_config, config_params
@@ -730,7 +734,8 @@ def register_command(server: PluginServerInterface, host: str, port: int):
     from .utils.auth_util import verify_chat_code_command  # 在函数内部导入所有需要的命令函数
     from .utils.auth_util import (change_account_command,
                                   create_account_command,
-                                  get_temp_password_command)
+                                  get_temp_password_command,
+                                  reset_totp_command, revoke_sessions_command)
 
     # 注册指令
     # 根节点不限制权限：!!webui verify 是玩家自助绑定聊天页账号的入口，
@@ -772,6 +777,27 @@ def register_command(server: PluginServerInterface, host: str, port: int):
             .runs(lambda src, ctx: get_temp_password_command(src, ctx, host, port))
         )
         .then(
+            Literal('2fa')
+            .requires(lambda src: src.has_permission(3))
+            .runs(lambda src, ctx: src.reply(__get_help_message()))
+            .then(
+                Literal('reset')
+                .then(
+                    Text('account')
+                    .runs(lambda src, ctx: reset_totp_command(src, ctx))
+                )
+            )
+        )
+        .then(
+            Literal('logout')
+            .requires(lambda src: src.has_permission(3))
+            .runs(lambda src, ctx: src.reply(__get_help_message()))
+            .then(
+                Text('account')
+                .runs(lambda src, ctx: revoke_sessions_command(src, ctx))
+            )
+        )
+        .then(
             # verify 面向所有玩家开放；命令内部已校验调用者必须是游戏内玩家，
             # 且验证码本身即为凭证（只有拿到验证码的玩家才能完成绑定）。
             Literal('verify')
@@ -791,6 +817,8 @@ def __get_help_message():
     help_message = "!!webui create <account> <password>: 注册 guguwebui 账户\n"
     help_message += "!!webui change <account> <old password> <new password>: 修改 guguwebui 账户密码\n"
     help_message += "!!webui temp: 获取 guguwebui 临时密码\n"
+    help_message += "!!webui 2fa reset <account>: 解除账户的两步验证（验证器丢失时使用）\n"
+    help_message += "!!webui logout <account>: 注销账户的全部登录会话\n"
     help_message += "!!webui verify <code>: 验证聊天页验证码\n"
     return help_message
 

@@ -60,11 +60,18 @@ from guguwebui.state import (RCON_ONLINE_CACHE, PluginApiHandlerParams,
 from guguwebui.structures import (BusinessException, ConfigData, DeepseekQuery,
                                   PimInstallRequest, PimUninstallRequest,
                                   PipPackageRequest, PluginInfo, SaveConfig,
-                                  SaveContent, ToggleConfig)
+                                  SaveContent, ToggleConfig, TotpDisableRequest,
+                                  TotpEnableRequest, TotpSetupRequest)
 from guguwebui.structures.envelope import ApiSuccessEnvelope
 from guguwebui.structures.envelope import error as api_error
 from guguwebui.structures.envelope import success as api_success
-from guguwebui.utils.auth_util import migrate_old_config
+from guguwebui.services.operation_audit_service import record_operation
+from guguwebui.utils import totp
+from guguwebui.utils.auth_token import revoke_user_tokens
+from guguwebui.utils.auth_util import migrate_old_config, verify_password
+from guguwebui.utils.rate_limit import (hit_limited, login_retry_after,
+                                        record_login_failure)
+from guguwebui.utils.request_security import get_client_ip, origin_allowed
 from guguwebui.utils.log_watcher import LogWatcher
 from guguwebui.utils.mc_util import get_plugin_version
 from guguwebui.utils.server_util import *
@@ -74,9 +81,10 @@ app = FastAPI(
     title="GUGU WebUI",
     description="MCDR WebUI 管理界面",
     version=get_plugin_version(),
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    # 文档端点改为登录后可见（见下方 /docs、/redoc、/openapi.json），避免向公网暴露完整接口清单
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # 导出 get_plugins_info 供 __init__.py 使用
@@ -419,11 +427,26 @@ async def qq_qr_login_start(request: Request):
       - code：轮询用的 code
       - qrUrl：二维码内容地址（前端据此生成二维码）
     """
+    if not _qq_qr_enabled(request):
+        return _qq_qr_disabled_response()
+    wait = hit_limited("qq_qr_start", get_client_ip(request), 10, 300)
+    if wait > 0:
+        return JSONResponse(
+            api_error(f"操作过于频繁，请 {wait} 秒后再试。", code="too_many_attempts", data={"retry_after": wait}),
+            status_code=429,
+            headers={"Retry-After": str(wait)},
+        )
     qr = await asyncio.to_thread(QQQRCodeLoginService.request_login_code)
+    code = qr.get("code", "")
+    # 扫码 code 绑定到发起它的浏览器会话（签名 session cookie）：
+    # 其他地方取得的 code（含直接向 q.qq.com 申请的）不能在本站兑换登录态
+    codes = [c for c in (request.session.get(_QQ_QR_SESSION_KEY) or []) if isinstance(c, str)]
+    codes = (codes + [code])[-_QQ_QR_MAX_PENDING:]
+    request.session[_QQ_QR_SESSION_KEY] = codes
     return JSONResponse(
         {
             "status": "success",
-            "code": qr.get("code", ""),
+            "code": code,
             "qrUrl": qr.get("qrUrl", ""),
         }
     )
@@ -434,14 +457,24 @@ async def qq_qr_login_status(request: Request, code: str = ""):
     """
     轮询 QQ 扫码登录状态；成功后会直接在本次响应中写入 token cookie。
     """
+    if not _qq_qr_enabled(request):
+        return _qq_qr_disabled_response()
     if not code:
         return JSONResponse(
             {"status": "error", "message": "Missing qq login code。"},
             status_code=400,
         )
+    pending_codes = request.session.get(_QQ_QR_SESSION_KEY) or []
+    if code not in pending_codes:
+        return JSONResponse(
+            api_error("扫码会话无效，请在本页面重新开始扫码登录。", code="qq_qr_session_mismatch"),
+            status_code=403,
+        )
 
     result = await asyncio.to_thread(QQQRCodeLoginService.query_status, code)
     state = str(result.get("state", "error"))
+    if state != "wait":
+        request.session[_QQ_QR_SESSION_KEY] = [c for c in pending_codes if c != code]
 
     if state == "wait":
         return JSONResponse(
@@ -488,6 +521,140 @@ async def qq_qr_login_status(request: Request, code: str = ""):
     )
 
 
+_QQ_QR_SESSION_KEY = "qq_qr_codes"
+_QQ_QR_MAX_PENDING = 3
+
+
+def _qq_qr_enabled(request: Request) -> bool:
+    return bool(request.app.state.config_service.get_config().get("qq_qr_login_enabled", True))
+
+
+def _qq_qr_disabled_response() -> JSONResponse:
+    return JSONResponse(
+        api_error("QQ 扫码登录已关闭。", code="qq_qr_disabled"),
+        status_code=403,
+    )
+
+
+@app.get("/api/login/options")
+async def login_options(request: Request):
+    """登录页可用的登录方式（匿名可读，仅包含开关）。"""
+    config = request.app.state.config_service.get_config()
+    return JSONResponse(
+        api_success(
+            {
+                "qq_qr_enabled": bool(config.get("qq_qr_login_enabled", True)),
+                "temp_code_enabled": bool(config.get("allow_temp_password", True)),
+            }
+        )
+    )
+
+
+@app.post("/api/login/totp")
+async def login_totp(
+    request: Request,
+    ticket: str = Form(""),
+    code: str = Form(""),
+):
+    """两步验证第二步：账号密码 / 扫码通过后返回的 ticket + 验证器中的 6 位验证码。"""
+    return await request.app.state.auth_service.complete_totp_login(request, ticket, code)
+
+
+# ============================================================#
+# 两步验证（TOTP）管理：只能操作当前登录账号自己的绑定
+
+
+def _require_password_account(user: dict) -> str:
+    """两步验证只对有密码的正式账号开放（排除临时码用户与子服 Panel Token）。"""
+    username = str(user.get("username") or "")
+    if user.get("auth_via") or username not in user_db.get("user", {}):
+        raise BusinessException(
+            "当前登录方式不支持两步验证，请使用账号密码登录后再设置。",
+            status_code=400,
+            code="totp_account_unsupported",
+        )
+    return username
+
+
+def _check_account_password(request: Request, username: str, password: str) -> None:
+    """敏感操作前复核密码；错误返回 400（避免前端把 401 当作登录失效而跳转）。"""
+    client_ip = get_client_ip(request)
+    wait = login_retry_after("web", client_ip, username)
+    if wait > 0:
+        raise BusinessException(
+            f"尝试过于频繁，请 {wait} 秒后再试。",
+            status_code=429,
+            code="too_many_attempts",
+            data={"retry_after": wait},
+        )
+    stored = user_db.get("user", {}).get(username)
+    if not stored or not verify_password(password, stored):
+        record_login_failure("web", client_ip, username)
+        raise BusinessException("密码错误。", status_code=400, code="invalid_password")
+
+
+@app.get("/api/auth/totp", response_model=ApiSuccessEnvelope)
+async def api_totp_status(request: Request, user: dict = Depends(get_current_user)):
+    username = str(user.get("username") or "")
+    supported = not user.get("auth_via") and username in user_db.get("user", {})
+    return JSONResponse(
+        api_success({"supported": supported, "enabled": supported and totp.is_enabled(username)})
+    )
+
+
+@app.post("/api/auth/totp/setup", response_model=ApiSuccessEnvelope)
+async def api_totp_setup(
+    request: Request, body: TotpSetupRequest, user: dict = Depends(get_current_user)
+):
+    """生成待确认的密钥（需当前密码），返回 otpauth 链接供前端生成二维码。"""
+    username = _require_password_account(user)
+    _check_account_password(request, username, body.password)
+    secret = totp.begin_setup(username)
+    return JSONResponse(
+        api_success(
+            {
+                "secret": secret,
+                "otpauth_uri": totp.provisioning_uri(secret, username),
+                "expires_in": totp.PENDING_SETUP_SECONDS,
+            }
+        )
+    )
+
+
+@app.post("/api/auth/totp/enable", response_model=ApiSuccessEnvelope)
+async def api_totp_enable(
+    request: Request, body: TotpEnableRequest, user: dict = Depends(get_current_user)
+):
+    """用验证码确认绑定；成功后注销该账号的其它登录会话。"""
+    username = _require_password_account(user)
+    if not totp.confirm_setup(username, body.code):
+        raise BusinessException(
+            "验证码错误或绑定已超时，请重新扫码后再试。", status_code=400, code="totp_invalid"
+        )
+    revoked = revoke_user_tokens(username, keep=user.get("token"))
+    record_operation(
+        user,
+        operation_type="auth.totp_enable",
+        summary="启用两步验证",
+        detail={"revoked_sessions": revoked},
+    )
+    return JSONResponse(api_success({"revoked_sessions": revoked}, message="两步验证已启用"))
+
+
+@app.post("/api/auth/totp/disable", response_model=ApiSuccessEnvelope)
+async def api_totp_disable(
+    request: Request, body: TotpDisableRequest, user: dict = Depends(get_current_user)
+):
+    username = _require_password_account(user)
+    _check_account_password(request, username, body.password)
+    if not totp.verify_code(username, body.code):
+        record_login_failure("web", get_client_ip(request), username)
+        raise BusinessException("验证码错误。", status_code=400, code="totp_invalid")
+    totp.disable(username)
+    record_operation(user, operation_type="auth.totp_disable", summary="关闭两步验证")
+    return JSONResponse(api_success(message="两步验证已关闭"))
+
+
 # logout Endpoints
 @app.get("/logout", response_class=RedirectResponse)
 async def logout(request: Request):
@@ -516,8 +683,57 @@ class SessionTokenSyncMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+class OriginCheckMiddleware(BaseHTTPMiddleware):
+    """跨站请求防护：带 Origin 的写请求必须与站点同源（或在 allowed_origins 中）。
+
+    SameSite=Lax 只区分“站点”（注册域），frp 等服务常给多个用户分配同一父域下的子域名，
+    兄弟子域名之间互为同站，Lax 拦不住。浏览器发起的写请求都会带 Origin，据此校验；
+    无 Origin 的请求（非浏览器客户端）放行，仍需正常鉴权。
+    主服代理子服时携带 X-Panel-Token（浏览器跨站无法附加自定义头），不做此校验。
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in _UNSAFE_METHODS and not request.headers.get("x-panel-token"):
+            origin = request.headers.get("origin")
+            if origin is not None and not origin_allowed(request, origin):
+                server = getattr(request.app.state, "server_interface", None)
+                if server is not None:
+                    server.logger.warning(
+                        f"已拒绝跨站请求: {request.method} {request.url.path}，Origin={origin}，"
+                        f"Host={request.headers.get('host')}。若这是你自己的访问地址（反向代理改写了 Host），"
+                        "请把它加入配置项 allowed_origins"
+                    )
+                return JSONResponse(
+                    api_error("请求来源不受信任（Origin 与站点不一致）", code="origin_mismatch"),
+                    status_code=403,
+                )
+        return await call_next(request)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """基础安全响应头：禁止 MIME 嗅探、禁止被其它站点嵌入（点击劫持）、不向外站泄露来源路径。"""
+
+    _HEADERS = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "SAMEORIGIN",
+        "Referrer-Policy": "same-origin",
+    }
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        for name, value in self._HEADERS.items():
+            if name not in response.headers:
+                response.headers[name] = value
+        return response
+
+
 app.add_middleware(SessionTokenSyncMiddleware)
 app.add_middleware(ApiProxyDispatchMiddleware)
+app.add_middleware(OriginCheckMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 app.include_router(panel_merge_router, prefix="/api") # 合并面板
 app.include_router(plugin_management_router, prefix="/api") # 插件管理
@@ -536,6 +752,28 @@ app.include_router(audit_router, prefix="/api") # 操作审计
 
 # ============================================================#
 # Pages - 使用 React SPA
+# API 文档：登录后可见
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_json(request: Request, user: dict = Depends(get_current_user)):
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_docs(request: Request, user: dict = Depends(get_current_user)):
+    from fastapi.openapi.docs import get_swagger_ui_html
+
+    root_path = request.scope.get("root_path", "")
+    return get_swagger_ui_html(openapi_url=f"{root_path}/openapi.json", title=f"{app.title} - Docs")
+
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_docs(request: Request, user: dict = Depends(get_current_user)):
+    from fastapi.openapi.docs import get_redoc_html
+
+    root_path = request.scope.get("root_path", "")
+    return get_redoc_html(openapi_url=f"{root_path}/openapi.json", title=f"{app.title} - ReDoc")
+
+
 @app.get("/index", response_class=HTMLResponse)
 async def read_index(request: Request, user: dict = Depends(get_current_user)):
     return serve_spa_index(request)

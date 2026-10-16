@@ -72,6 +72,9 @@ class WebConfigSaveRequest(BaseModel):
     super_account: Optional[str] = None
     disable_admin_login_web: Optional[bool] = None
     enable_temp_login_password: Optional[bool] = None
+    qq_qr_login_enabled: Optional[bool] = None
+    trusted_proxies: Optional[list[str]] = None
+    allowed_origins: Optional[list[str]] = None
     ai_api_key: Optional[str] = None
     ai_model: Optional[str] = None
     ai_api_url: Optional[str] = None
@@ -92,6 +95,22 @@ class WebConfigSaveRequest(BaseModel):
     panel_role: Optional[str] = None  # "master" | "slave"
     panel_slaves: Optional[list] = None
     panel_master: Optional[dict] = None
+
+
+class TotpSetupRequest(BaseModel):
+    """开始绑定两步验证：需当前密码"""
+    password: str = Field(..., min_length=1)
+
+
+class TotpEnableRequest(BaseModel):
+    """确认绑定：验证器 App 中的 6 位验证码"""
+    code: str = Field(..., min_length=6, max_length=8)
+
+
+class TotpDisableRequest(BaseModel):
+    """关闭两步验证：当前密码 + 验证码"""
+    password: str = Field(..., min_length=1)
+    code: str = Field(..., min_length=6, max_length=8)
 
 
 # Pip包管理相关模型

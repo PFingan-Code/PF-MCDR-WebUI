@@ -103,7 +103,23 @@
 
 登录类接口按失败次数限流（滑动窗口 5 分钟）：同一 IP + 账号 5 次失败，或同一
 IP 合计 20 次失败后，返回 **429** `too_many_attempts`（`data.retry_after` 秒数，
-表单登录响应另带 `Retry-After` 头）。成功登录清除该账号的失败计数。
+表单登录响应另带 `Retry-After` 头）。成功登录清除该账号的失败计数。另有不区分
+IP 的上限：临时登录码全站 5 分钟 100 次失败；两步验证码同一账号 15 分钟 10 次失败。
+
+**客户端 IP**（限流、`allowed_master_ips`、配对请求记录均使用）：默认取 TCP 对端
+地址，忽略 `X-Forwarded-For` / `X-Real-IP`；仅当对端属于配置项 `trusted_proxies`
+时才采信转发头（取 `X-Forwarded-For` 最右侧的非可信地址）。独立运行时 uvicorn
+以 `proxy_headers=False` 启动。部署说明见 [公网部署安全指南](公网部署安全指南.md)。
+
+**跨站请求防护**：带 `Origin` 头的 `POST/PUT/PATCH/DELETE` 请求，`Origin` 必须与
+请求 `Host`（可信代理的 `X-Forwarded-Host`）或配置项 `allowed_origins` 一致，否则
+**403** `origin_mismatch`；`Origin: null` 一律拒绝。无 `Origin` 的请求（非浏览器
+客户端）与携带 `X-Panel-Token` 的请求不做此校验。所有响应附带
+`X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、
+`Referrer-Policy: same-origin`。HTTPS 访问（含可信代理声明
+`X-Forwarded-Proto: https`）时 `token` cookie 带 `Secure`。
+
+**API 文档**：`/docs`、`/redoc`、`/openapi.json` 需登录（未登录重定向登录页）。
 
 ### 6. 多服面板代理（主服）
 
@@ -115,10 +131,14 @@ IP 合计 20 次失败后，返回 **429** `too_many_attempts`（`data.retry_aft
 由 `tests/test_proxy_local.py` 全量路由扫描守护）：
 
 - 精确路径：`/api/login`、`/api/login/qq_qr/start`、`/api/login/qq_qr/status`、
+  `/api/login/options`、`/api/login/totp`、
   `/api/logout`、`/api/auth/me`、`/api/servers`、`/api/panel_merge_config`、
   `/api/audit_logs`、`/api/i18n/languages`、`/api/plugins/online`
   （含旧路径兜底 `/api/online-plugins`）
-- 前缀：`/api/pairing/*`
+- 前缀：`/api/pairing/*`、`/api/auth/totp*`
+
+主服转发到子服时不携带浏览器的 `Origin` / `Referer` / `Cookie`，并按主服解析出的
+客户端 IP 重写 `X-Forwarded-For`。
 
 ### 7. 前端页面（非 API）
 
@@ -144,10 +164,45 @@ SPA 由前端路由处理。
   可选 `temp_code`（临时登录码）、`remember`。
 - 属“保持现状”项（表单 + Cookie 会话为常规做法，不纳入 REST 外壳）。
 - 当 `disable_other_admin` 为真时，**账号密码与临时码登录都只允许
-  `super_admin_account`**（其他账号或 `tempuser` → **403**）。
+  `super_admin_account`**（其他账号或 `tempuser` → **403**）。该判断在密码校验
+  **之后**：密码错误一律 **401**，不透露哪个账号是超级管理员。
+- 账号已启用两步验证：密码正确时返回 **401** `totp_required`，
+  `data = {ticket, expires_in}`，不签发 token；再调用 `POST /api/login/totp`。
+  临时登录码由控制台签发，不要求两步验证码。
 - 失败次数超限 → **429** `too_many_attempts`（见“认证方式”）。
 - 登录页为 `GET /login`；QQ 扫码登录：`POST /api/login/qq_qr/start`
   （返回 `code` + `qrUrl`）→ 轮询 `GET /api/login/qq_qr/status?code=...`。
+  `code` 记录在发起它的浏览器会话（签名 session cookie）中，其他会话或其他来源的
+  `code` → **403** `qq_qr_session_mismatch`；`start` 每 IP 5 分钟最多 10 次。
+  配置 `qq_qr_login_enabled: false` 时两个接口均 **403** `qq_qr_disabled`。
+  账号启用两步验证时 `status` 返回 **401** `totp_required`（另带 `state`）。
+
+### POST /api/login/totp — 两步验证第二步
+
+- 无需登录。表单参数：`ticket`（来自 `totp_required` 响应）、`code`（6 位）。
+- 成功：与 `/api/login` 相同的成功体并写入 `token` cookie。
+- 验证码错误 → **401** `totp_invalid`（`data.remaining_attempts`）；票据过期、
+  已使用或错误 5 次后 → **401** `totp_ticket_invalid`，需从第一步重新登录。
+  同一验证码（同一 30 秒时间步）不能重复使用。
+
+### GET /api/login/options — 登录方式开关
+
+- 无需登录。`data`：`{qq_qr_enabled, temp_code_enabled}`，登录页据此隐藏入口。
+
+### 两步验证管理（权限：登录；仅限账号密码登录的正式账号）
+
+只能管理**当前登录账号**自己的绑定；临时码用户、子服 Panel Token → **400**
+`totp_account_unsupported`。密码错误返回 **400** `invalid_password`（不用 401，
+避免前端误判为登录失效），并计入登录失败次数。
+
+- `GET /api/auth/totp` → `data: {supported, enabled}`
+- `POST /api/auth/totp/setup`，body `{password}` → `data: {secret, otpauth_uri,
+  expires_in}`；生成待确认密钥（10 分钟内有效），确认前旧绑定仍然有效。
+- `POST /api/auth/totp/enable`，body `{code}` → 启用，并注销该账号其它全部会话
+  （保留当前会话），`data.revoked_sessions` 为注销数量。审计 `auth.totp_enable`。
+- `POST /api/auth/totp/disable`，body `{password, code}` → 关闭。审计
+  `auth.totp_disable`。
+- 验证器丢失：MCDR 控制台执行 `!!webui 2fa reset <账号>`（同时注销该账号全部会话）。
 
 ### GET /api/auth/me — 当前登录用户（检查登录状态）
 
@@ -267,7 +322,8 @@ SPA 由前端路由处理。
 
 - GET 权限：登录；PUT 权限：管理员。PUT body 为结构化字段（`WebConfigSaveRequest`，
   未给字段不修改，无 `action` 分派），覆盖 host/port/super_account、
-  ssl_*、ai_*、public_chat_*、chat_*、icp_records、panel_* 等。
+  ssl_*、ai_*、public_chat_*、chat_*、icp_records、panel_*、`qq_qr_login_enabled`、
+  `trusted_proxies`、`allowed_origins` 等。
 - GET 的 `data.ai_api_key` 恒为空串，以 `ai_api_key_configured` 判断是否已配置。
 - 旧 `/api/get_web_config`、`/api/save_web_config`（action 翻转）已下线。
 
